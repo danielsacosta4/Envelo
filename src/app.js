@@ -69,8 +69,9 @@
       <div class="amount">${esc(money(view.readyToAssign))}</div>`;
 
     const rows = [];
-    for (const g of view.groups) {
-      rows.push(`<tr class="group"><td colspan="5">${esc(g.name)}</td></tr>`);
+    view.groups.forEach((g, gi) => {
+      const tone = `tone-${gi % 3}`;
+      rows.push(`<tr class="group ${tone}"><td colspan="5">${esc(g.name)}</td></tr>`);
       for (const e of g.envelopes) {
         const availClass = e.available < 0 ? 'neg' : e.available === 0 ? 'zero' : '';
         const goal = e.goal == null ? '' : e.needed > 0
@@ -79,7 +80,7 @@
         const fund = e.needed > 0
           ? `<button type="button" class="fund" data-action="fund" data-id="${e.id}" data-amount="${e.needed}">Fund goal</button>`
           : '';
-        rows.push(`<tr>
+        rows.push(`<tr class="${tone}">
           <td><div class="env-name">${esc(e.name)}${e.overspent ? '<span class="badge">Overspent</span>' : ''}</div>${goal}</td>
           <td class="num"><input type="text" inputmode="decimal" aria-label="Assigned to ${esc(e.name)}"
               value="${B.toInput(e.assigned)}" data-env="${e.id}"></td>
@@ -88,7 +89,7 @@
           <td class="num">${fund}</td>
         </tr>`);
       }
-    }
+    });
     $('#envelope-rows').innerHTML = rows.join('');
     $('#empty').hidden = budget.envelopes.length > 0;
 
