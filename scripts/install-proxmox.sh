@@ -1,60 +1,137 @@
 #!/usr/bin/env bash
-# Install Envelo into a new LXC container on a Proxmox VE host.
+# Envelo LXC installer for Proxmox VE, in the style of community-scripts.
 #
 # Run on the Proxmox host as root:
 #   bash -c "$(curl -fsSL https://raw.githubusercontent.com/danielsacosta4/Envelo/main/scripts/install-proxmox.sh)"
 #
-# The container runs the Envelo server as a systemd service. Accounts and
-# budgets are stored in /var/lib/envelo inside the container.
+# Default: picks the next free ID, the first active storage, the first bridge,
+# DHCP, 1 CPU, 512 MB RAM, 4 GB disk, port 80.
+# Advanced: asks for each of those in a menu.
 #
-# Optional overrides (environment variables):
-#   CTID=120            container ID (default: next free ID)
-#   HOSTNAME_CT=envelo  container hostname
-#   CORES=1  MEMORY=512  DISK_GB=2
-#   STORAGE=local-lvm   storage for the root disk
-#   BRIDGE=vmbr0        network bridge
-#   PORT=80             port the app listens on inside the container
-#   REF=main            Git branch or tag to install
+# Any value can be preset with an environment variable, for example:
+#   CTID=120 PORT=8080 bash -c "$(curl -fsSL ...)"
+#
+# Private repository: set GITHUB_TOKEN to a token that can read the repo.
 set -Eeuo pipefail
+
+REPO="${REPO:-danielsacosta4/Envelo}"
+REF="${REF:-main}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+RAW="https://raw.githubusercontent.com/$REPO/$REF/scripts/install"
 
 CTID="${CTID:-}"
 HOSTNAME_CT="${HOSTNAME_CT:-envelo}"
 CORES="${CORES:-1}"
 MEMORY="${MEMORY:-512}"
-DISK_GB="${DISK_GB:-2}"
-STORAGE="${STORAGE:-local-lvm}"
-BRIDGE="${BRIDGE:-vmbr0}"
+DISK_GB="${DISK_GB:-4}"
 PORT="${PORT:-80}"
-REF="${REF:-main}"
-REPO="danielsacosta4/Envelo"
-TEMPLATE_STORE="local"
+STORAGE="${STORAGE:-}"
+BRIDGE="${BRIDGE:-}"
+TEMPLATE_STORE="${TEMPLATE_STORE:-}"
 
-msg()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33mWarning:\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
+msg_info() { printf '  \033[1;33m…\033[0m %s\n' "$*"; }
+msg_ok()   { printf '  \033[1;32m✔\033[0m %s\n' "$*"; }
+msg_err()  { printf '  \033[1;31m✘\033[0m %s\n' "$*" >&2; }
+header()   { printf '\n\033[1m%s\033[0m\n' "$*"; }
+die()      { msg_err "$*"; exit 1; }
+
+on_error() {
+  msg_err "Installation stopped at line $1."
+  if [[ -n "$CTID" ]] && pct status "$CTID" >/dev/null 2>&1; then
+    echo "    Container $CTID exists. To start over: pct destroy $CTID, then run the installer again." >&2
+  fi
+}
+trap 'on_error $LINENO' ERR
+
+# Download a URL, sending the token for private repositories.
+fetch() {
+  if [[ -n "$GITHUB_TOKEN" ]]; then
+    curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "$1"
+  else
+    curl -fsSL "$1"
+  fi
+}
+
+# First active storage of a content type, preferring the given name.
+pick_storage() {
+  local list
+  list="$(pvesm status -content "$1" | awk 'NR>1 && $3=="active" {print $1}')"
+  if grep -qx "$2" <<<"$list"; then
+    echo "$2"
+  else
+    head -n 1 <<<"$list"
+  fi
+}
+
+pick_bridge() {
+  local list
+  list="$(ls /sys/class/net | grep '^vmbr' || true)"
+  if grep -qx vmbr0 <<<"$list"; then
+    echo vmbr0
+  else
+    head -n 1 <<<"$list"
+  fi
+}
+
+is_number() { [[ "$1" =~ ^[0-9]+$ ]]; }
 
 [[ $EUID -eq 0 ]] || die "Run as root on the Proxmox host."
-command -v pct >/dev/null   || die "pct not found. This script must run on a Proxmox VE host."
-command -v pveam >/dev/null || die "pveam not found. This script must run on a Proxmox VE host."
+for cmd in pct pveam pvesh pvesm; do
+  command -v "$cmd" >/dev/null || die "$cmd not found. Run this on a Proxmox VE host."
+done
 
-if [[ -z "$CTID" ]]; then
-  CTID="$(pvesh get /cluster/nextid)"
-fi
-if pct status "$CTID" >/dev/null 2>&1; then
-  die "Container $CTID already exists. Set CTID to a free ID, or remove it first with: pct destroy $CTID"
+header "Envelo for Proxmox VE"
+
+# Choose the mode. Default needs no input; Advanced opens menus.
+MODE="default"
+if [[ -r /dev/tty ]] && command -v whiptail >/dev/null; then
+  MODE="$(whiptail --title "Envelo" --menu "How do you want to install Envelo?" 14 70 2 \
+    default  "Automatic: next free ID, storage and bridge found for you" \
+    advanced "Choose the ID, resources, storage, bridge and port" \
+    3>&1 1>&2 2>&3)" || die "Installation cancelled."
 fi
 
-msg "Finding a Debian 12 template"
-pveam update >/dev/null
+# Automatic values, used as defaults in both modes.
+[[ -n "$CTID" ]] || CTID="$(pvesh get /cluster/nextid)"
+[[ -n "$STORAGE" ]] || STORAGE="$(pick_storage rootdir local-lvm)"
+[[ -n "$TEMPLATE_STORE" ]] || TEMPLATE_STORE="$(pick_storage vztmpl local)"
+[[ -n "$BRIDGE" ]] || BRIDGE="$(pick_bridge)"
+[[ -n "$STORAGE" ]] || die "No active storage found for containers."
+[[ -n "$TEMPLATE_STORE" ]] || die "No active storage found for templates."
+[[ -n "$BRIDGE" ]] || die "No network bridge found (expected vmbr0)."
+
+if [[ "$MODE" == "advanced" ]]; then
+  ask() {
+    whiptail --title "Envelo" --inputbox "$1" 9 70 "$2" 3>&1 1>&2 2>&3 || die "Installation cancelled."
+  }
+  CTID="$(ask "Container ID" "$CTID")"
+  HOSTNAME_CT="$(ask "Hostname" "$HOSTNAME_CT")"
+  CORES="$(ask "CPU cores" "$CORES")"
+  MEMORY="$(ask "Memory in MB" "$MEMORY")"
+  DISK_GB="$(ask "Disk size in GB" "$DISK_GB")"
+  STORAGE="$(ask "Storage for the container disk" "$STORAGE")"
+  BRIDGE="$(ask "Network bridge (DHCP)" "$BRIDGE")"
+  PORT="$(ask "Port for the Envelo web app" "$PORT")"
+fi
+
+is_number "$CTID" || die "Container ID must be a number."
+is_number "$CORES" || die "CPU cores must be a number."
+is_number "$MEMORY" || die "Memory must be a number of MB."
+is_number "$DISK_GB" || die "Disk size must be a number of GB."
+is_number "$PORT" || die "Port must be a number."
+pct status "$CTID" >/dev/null 2>&1 && die "Container $CTID already exists. Choose another ID."
+
+header "Preparing the container"
+msg_info "Finding a Debian 12 template"
 TEMPLATE="$(pveam available --section system | awk '/debian-12-standard_.*_amd64\.tar\.zst/ {print $2}' | sort -V | tail -n 1)"
-[[ -n "$TEMPLATE" ]] || die "No Debian 12 template found in pveam. Check your network connection."
-
+[[ -n "$TEMPLATE" ]] || die "No Debian 12 template found. Check the host's internet access."
 if ! pveam list "$TEMPLATE_STORE" | grep -q "$TEMPLATE"; then
-  msg "Downloading template $TEMPLATE"
-  pveam download "$TEMPLATE_STORE" "$TEMPLATE"
+  msg_info "Downloading $TEMPLATE"
+  pveam download "$TEMPLATE_STORE" "$TEMPLATE" >/dev/null
 fi
+msg_ok "Template $TEMPLATE is ready"
 
-msg "Creating container $CTID ($HOSTNAME_CT)"
+msg_info "Creating container $CTID ($HOSTNAME_CT) on $STORAGE"
 pct create "$CTID" "$TEMPLATE_STORE:vztmpl/$TEMPLATE" \
   --hostname "$HOSTNAME_CT" \
   --cores "$CORES" \
@@ -63,121 +140,38 @@ pct create "$CTID" "$TEMPLATE_STORE:vztmpl/$TEMPLATE" \
   --net0 "name=eth0,bridge=$BRIDGE,ip=dhcp" \
   --unprivileged 1 \
   --onboot 1 \
-  --start 1
+  --start 1 >/dev/null
+msg_ok "Container $CTID created and started"
 
-msg "Waiting for network in the container"
+msg_info "Waiting for an IP address"
+IP=""
 for _ in $(seq 1 60); do
-  if pct exec "$CTID" -- getent hosts deb.debian.org >/dev/null 2>&1; then
-    break
-  fi
+  IP="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  [[ -n "$IP" ]] && break
   sleep 2
 done
-pct exec "$CTID" -- getent hosts deb.debian.org >/dev/null 2>&1 \
-  || die "Container $CTID has no working network. Check the bridge and DHCP, then destroy it (pct destroy $CTID) and re-run."
+[[ -n "$IP" ]] || die "The container got no IP address. Check the bridge and DHCP, then: pct destroy $CTID"
+msg_ok "Container address is $IP"
 
-msg "Installing Node.js and tools"
-pct exec "$CTID" -- bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq nodejs curl ca-certificates tar >/dev/null'
+header "Installing Envelo inside the container"
+CT_SCRIPT="$(mktemp)"
+trap 'rm -f "$CT_SCRIPT"; on_error $LINENO' ERR
+fetch "$RAW/envelo-container.sh" > "$CT_SCRIPT" || die "Could not download the container install script from $RAW."
+pct push "$CTID" "$CT_SCRIPT" /root/envelo-container.sh
+rm -f "$CT_SCRIPT"
+pct exec "$CTID" -- env REPO="$REPO" REF="$REF" PORT="$PORT" GITHUB_TOKEN="$GITHUB_TOKEN" \
+  bash /root/envelo-container.sh
 
-msg "Installing Envelo ($REF)"
-pct exec "$CTID" -- bash -c "cat > /usr/local/bin/envelo-update <<'UPDATER'
-#!/usr/bin/env bash
-# Fetch the latest Envelo code and restart the service. Data in /var/lib/envelo is kept.
-set -Eeuo pipefail
-REF=\"\${1:-$REF}\"
-TMP=\"\$(mktemp -d)\"
-trap 'rm -rf \"\$TMP\"' EXIT
-curl -fsSL \"https://codeload.github.com/$REPO/tar.gz/refs/heads/\$REF\" | tar xz -C \"\$TMP\" --strip-components=1
-rm -rf /opt/envelo.new && mkdir -p /opt/envelo.new
-cp -r \"\$TMP/server\" \"\$TMP/src\" \"\$TMP/index.html\" /opt/envelo.new/
-rm -rf /opt/envelo && mv /opt/envelo.new /opt/envelo
-systemctl restart envelo
-echo \"Envelo updated to \$REF.\"
-UPDATER
-chmod +x /usr/local/bin/envelo-update
-id envelo >/dev/null 2>&1 || useradd --system --home /var/lib/envelo --shell /usr/sbin/nologin envelo
-mkdir -p /var/lib/envelo && chown envelo:envelo /var/lib/envelo
-/usr/local/bin/envelo-update '$REF'"
-
-msg "Starting the Envelo service"
-pct exec "$CTID" -- bash -c "cat > /etc/systemd/system/envelo.service <<EOF
-[Unit]
-Description=Envelo budgeting server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart=/usr/bin/node /opt/envelo/server/server.js
-Environment=PORT=$PORT
-Environment=HOST=0.0.0.0
-Environment=DATA_DIR=/var/lib/envelo
-Restart=on-failure
-User=envelo
-Group=envelo
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadWritePaths=/var/lib/envelo
-
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl daemon-reload
-systemctl enable --now envelo"
-
-msg "Setting automatic console login and the address banner"
 PORT_SUFFIX=""
 [[ "$PORT" == "80" ]] || PORT_SUFFIX=":$PORT"
-pct exec "$CTID" -- mkdir -p /etc/systemd/system/console-getty.service.d /etc/systemd/system/container-getty@.service.d
 
-# Log in as root on the container console without a password prompt.
-# Anyone who can open the console already has root access to the Proxmox host,
-# so this adds no exposure beyond that.
-AUTOLOGIN_TMP="$(mktemp -d)"
-cat > "$AUTOLOGIN_TMP/console-getty.conf" <<'EOF'
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin root --noclear --keep-baud console 115200,38400,9600 $TERM
-EOF
-cat > "$AUTOLOGIN_TMP/container-getty.conf" <<'EOF'
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin root --noclear --keep-baud %I 115200,38400,9600 $TERM
-EOF
-pct push "$CTID" "$AUTOLOGIN_TMP/console-getty.conf" /etc/systemd/system/console-getty.service.d/autologin.conf
-pct push "$CTID" "$AUTOLOGIN_TMP/container-getty.conf" /etc/systemd/system/container-getty@.service.d/autologin.conf
-
-# Show the internal IP and app address on login (shell banner).
-BANNER_TMP="$(mktemp -d)"
-cat > "$BANNER_TMP/envelo-banner.sh" <<'EOF'
-# Installed by the Envelo installer. Shows the address of this container on login.
-if [ -t 1 ]; then
-  ENVELO_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  printf '\n  Envelo is running.\n  Internal IP: %s\n  Open in a browser: http://%s__PORT_SUFFIX__\n\n' "${ENVELO_IP:-unknown}" "${ENVELO_IP:-<container-ip>}"
-fi
-EOF
-sed -i "s|__PORT_SUFFIX__|$PORT_SUFFIX|" "$BANNER_TMP/envelo-banner.sh"
-pct push "$CTID" "$BANNER_TMP/envelo-banner.sh" /etc/profile.d/envelo-banner.sh
-
-# Show the same address on the console before login (the pre-login screen).
-cat > "$BANNER_TMP/issue" <<EOF
-Envelo container \n \l
-Envelo: http://\4{eth0}$PORT_SUFFIX
-
-EOF
-pct push "$CTID" "$BANNER_TMP/issue" /etc/issue
-rm -rf "$AUTOLOGIN_TMP" "$BANNER_TMP"
-
-pct exec "$CTID" -- systemctl daemon-reload
-pct exec "$CTID" -- systemctl restart console-getty.service >/dev/null 2>&1 || true
-
-IP="$(pct exec "$CTID" -- hostname -I | awk '{print $1}')"
-msg "Envelo is installed in container $CTID."
-if [[ "$PORT" == "80" ]]; then
-  echo "    Open: http://${IP:-<container-ip>}/"
-else
-  echo "    Open: http://${IP:-<container-ip>}:$PORT/"
-fi
-echo "    Update later:  pct exec $CTID -- envelo-update"
-echo "    Backups:       data is in /var/lib/envelo inside the container; include it in your Proxmox backups."
+header "Envelo is ready"
+echo "  Open in a browser:  http://$IP$PORT_SUFFIX"
+echo "  Create your account on that page, then start budgeting."
 echo
-warn "Traffic is plain HTTP. Put it behind HTTPS (for example a reverse proxy with a certificate) before using it outside your home network, then set SECURE_COOKIES=1 in the service."
+echo "  Console:            pct enter $CTID   (logs in automatically)"
+echo "  Update Envelo:      pct exec $CTID -- update"
+echo "  Data:               /var/lib/envelo inside the container; include it in Proxmox backups"
+echo
+echo "  Traffic is plain HTTP. Put it behind HTTPS before using it outside your home network,"
+echo "  then set SECURE_COOKIES=1 in /etc/systemd/system/envelo.service and restart envelo."
