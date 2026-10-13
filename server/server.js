@@ -15,6 +15,7 @@ const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 10;
+const BACKUPS_KEPT = 14;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -80,6 +81,27 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
     const tmp = `${dbFile}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(db), { mode: 0o600 });
     fs.renameSync(tmp, dbFile);
+    backupDaily();
+  }
+
+  // Keep one copy of the data file per day, for the last BACKUPS_KEPT days.
+  function backupDaily() {
+    const dir = path.join(dataDir, 'backups');
+    const today = new Date().toISOString().slice(0, 10);
+    const file = path.join(dir, `db-${today}.json`);
+    try {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      if (!fs.existsSync(file) && fs.existsSync(dbFile)) {
+        fs.copyFileSync(dbFile, file);
+        fs.chmodSync(file, 0o600);
+      }
+      const all = fs.readdirSync(dir).filter((f) => /^db-\d{4}-\d{2}-\d{2}\.json$/.test(f)).sort();
+      for (const old of all.slice(0, Math.max(0, all.length - BACKUPS_KEPT))) {
+        fs.unlinkSync(path.join(dir, old));
+      }
+    } catch (err) {
+      console.error('Backup failed:', err.message);
+    }
   }
 
   function sendJson(res, status, body, extraHeaders = {}) {
@@ -221,17 +243,35 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
     if (req.method === 'GET' && pathname === '/api/budget') {
       const user = requireUser(req);
       const record = db.budgets[user.email] || null;
-      return sendJson(res, 200, { budget: record ? record.budget : null, savedAt: record ? record.savedAt : null });
+      return sendJson(res, 200, {
+        budget: record ? record.budget : null,
+        savedAt: record ? record.savedAt : null,
+        revision: record ? record.revision || 0 : 0,
+      });
     }
 
     if (req.method === 'PUT' && pathname === '/api/budget') {
       const user = requireUser(req);
       const budget = await readJson(req);
       if (!isBudget(budget)) throw new HttpError(400, 'This is not a valid budget.');
+      // Optimistic locking: a save based on an older revision is refused, so
+      // two devices cannot silently overwrite each other.
+      const current = db.budgets[user.email];
+      const currentRevision = current ? current.revision || 0 : 0;
+      const ifMatch = req.headers['if-match'];
+      if (ifMatch !== undefined && Number(ifMatch) !== currentRevision) {
+        return sendJson(res, 409, {
+          error: 'Your budget was changed on another device.',
+          budget: current ? current.budget : null,
+          savedAt: current ? current.savedAt : null,
+          revision: currentRevision,
+        });
+      }
       const savedAt = new Date().toISOString();
-      db.budgets[user.email] = { budget, savedAt };
+      const revision = currentRevision + 1;
+      db.budgets[user.email] = { budget, savedAt, revision };
       persist();
-      return sendJson(res, 200, { savedAt });
+      return sendJson(res, 200, { savedAt, revision });
     }
 
     throw new HttpError(404, 'Not found.');

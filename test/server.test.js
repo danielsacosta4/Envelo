@@ -23,9 +23,10 @@ async function start() {
 // Small client that keeps the session cookie, like a browser does.
 function client(base) {
   let cookie = '';
-  return async function call(method, url, body) {
+  return async function call(method, url, body, ifMatch) {
     const headers = {};
     if (cookie) headers.Cookie = cookie;
+    if (method === 'PUT_IF') { method = 'PUT'; headers['If-Match'] = String(ifMatch); }
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const res = await fetch(base + url, {
       method,
@@ -212,3 +213,45 @@ test('API writes require a JSON content type (basic CSRF protection)', async () 
     await s.close();
   }
 });
+
+test('a save based on an old revision is refused with the latest data', async () => {
+  const s = await start();
+  try {
+    const call = client(s.base);
+    await call('POST', '/api/register', { email: 'r@example.com', password: 'longenough1' });
+    const put = (rev, body) => fetchWith(s.base, call, rev, body);
+    const first = await put(0, sampleBudget());
+    assert.equal(first.status, 200);
+    assert.equal(first.body.revision, 1);
+    // Another device saved revision 2 meanwhile.
+    const second = await put(1, { ...sampleBudget(), currency: 'USD' });
+    assert.equal(second.body.revision, 2);
+    // This device still thinks it is on revision 1.
+    const stale = await put(1, { ...sampleBudget(), currency: 'GBP' });
+    assert.equal(stale.status, 409);
+    assert.equal(stale.body.revision, 2);
+    assert.equal(stale.body.budget.currency, 'USD');
+    assert.equal((await call('GET', '/api/budget')).body.revision, 2);
+  } finally {
+    await s.close();
+  }
+});
+
+test('the server keeps a daily backup of the data file', async () => {
+  const s = await start();
+  try {
+    const call = client(s.base);
+    await call('POST', '/api/register', { email: 'k@example.com', password: 'longenough1' });
+    const files = fs.readdirSync(path.join(s.dataDir, 'backups'));
+    assert.equal(files.length, 1);
+    assert.match(files[0], /^db-\d{4}-\d{2}-\d{2}\.json$/);
+  } finally {
+    await s.close();
+  }
+});
+
+// PUT /api/budget with an If-Match revision, reusing the client's cookie.
+async function fetchWith(base, call, revision, body) {
+  const res = await call('PUT_IF', '/api/budget', body, revision);
+  return res;
+}

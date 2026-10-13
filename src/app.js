@@ -27,14 +27,15 @@
   let budget = B.create();
   let month = thisMonth();
   let account = null;
+  let revision = 0; // server revision this copy is based on
 
   // API
 
-  async function api(method, url, body) {
+  async function api(method, url, body, extraHeaders = {}) {
     const res = await fetch(url, {
       method,
       credentials: 'same-origin',
-      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...extraHeaders },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await res.text();
@@ -42,6 +43,7 @@
     if (!res.ok) {
       const err = new Error(data.error || `Request failed (${res.status}).`);
       err.status = res.status;
+      err.data = data;
       throw err;
     }
     return data;
@@ -74,12 +76,24 @@
     inFlight = true;
     dirty = false;
     try {
-      const { savedAt } = await api('PUT', '/api/budget', budget);
+      const res = await api('PUT', '/api/budget', budget, { 'If-Match': String(revision) });
+      revision = res.revision;
+      const { savedAt } = res;
       setSync(`Saved ${new Date(savedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`);
     } catch (err) {
       if (err.status === 401) {
         inFlight = false;
         showAuth('Your session ended. Sign in again. Unsaved changes are kept on this screen until you do.');
+        return;
+      }
+      if (err.status === 409) {
+        // Another device saved first. Show its version rather than overwrite it.
+        inFlight = false;
+        budget = err.data.budget ? B.fromJSON(err.data.budget) : B.create();
+        revision = err.data.revision;
+        showError('Your budget was changed on another device, so this screen now shows the latest version. Your last change here was not saved; please make it again.');
+        setSync('Reloaded the latest version');
+        render();
         return;
       }
       dirty = true;
@@ -238,8 +252,9 @@
   });
 
   async function loadBudget() {
-    const { budget: saved } = await api('GET', '/api/budget');
-    budget = saved ? B.fromJSON(saved) : B.create();
+    const res = await api('GET', '/api/budget');
+    budget = res.budget ? B.fromJSON(res.budget) : B.create();
+    revision = res.revision || 0;
     setSync('');
   }
 
@@ -316,8 +331,23 @@
   });
 
   // Flush pending changes when the tab is hidden, e.g. before the browser closes it.
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') flush();
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'hidden') {
+      flush();
+      return;
+    }
+    // Coming back to the tab: pick up changes made on other devices.
+    if (!account || dirty || inFlight) return;
+    try {
+      const res = await api('GET', '/api/budget');
+      if ((res.revision || 0) !== revision) {
+        budget = res.budget ? B.fromJSON(res.budget) : B.create();
+        revision = res.revision || 0;
+        render();
+      }
+    } catch {
+      // Offline or signed out: keep what is on screen.
+    }
   });
 
   document.querySelectorAll('input[name="kind"]').forEach((r) => r.addEventListener('change', syncKind));
