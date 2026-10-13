@@ -169,6 +169,9 @@
         <form id="account-form" class="stack" autocomplete="off">
           <label>Name <input type="text" name="acctName" maxlength="60" required placeholder="Checking"></label>
           <label>Current balance <input type="text" name="balance" inputmode="decimal" placeholder="0.00"></label>
+          <label class="check"><input type="checkbox" name="offBudget">
+            <span>Off budget <span class="optional">(mortgage, investments, pension: tracked, but not budgeted)</span></span>
+          </label>
           <button type="submit" class="primary">Add account</button>
         </form>
       </section>

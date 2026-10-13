@@ -276,8 +276,8 @@ test('the Actual import endpoint converts a zip without saving it', { skip: (() 
     const ok = await fetch(s.base + '/api/import/actual', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/zip' }, body: zip });
     assert.equal(ok.status, 200);
     const body = await ok.json();
-    assert.equal(body.summary.transactions, 9);
-    assert.equal(body.budget.accounts.length, 2);
+    assert.equal(body.summary.transactions, 13);
+    assert.equal(body.budget.accounts.length, 3);
     // Nothing saved until the app confirms.
     assert.equal((await call('GET', '/api/budget')).body.budget, null);
     const bad = await fetch(s.base + '/api/import/actual', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/zip' }, body: Buffer.from('nope') });

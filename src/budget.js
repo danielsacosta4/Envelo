@@ -190,11 +190,13 @@
   // amount: positive integer cents.
   // Accounts
 
-  function addAccount(b, { name, balance = 0, date }) {
+  // offBudget accounts (mortgage, investments, pension) track a balance but
+  // never touch Ready to Assign or envelopes.
+  function addAccount(b, { name, balance = 0, date, offBudget = false }) {
     if (!Array.isArray(b.accounts)) b.accounts = [];
     const clean = String(name || '').trim();
     if (!clean) throw new Error('Account needs a name.');
-    const acct = { id: newId(), name: clean, reconciledAt: null, reconciledBalance: null };
+    const acct = { id: newId(), name: clean, offBudget: !!offBudget, reconciledAt: null, reconciledBalance: null };
     b.accounts.push(acct);
     const start = Number(balance) || 0;
     if (start !== 0) {
@@ -223,6 +225,27 @@
       throw new Error('A recurring transaction uses this account. Remove it first.');
     }
     b.accounts = b.accounts.filter((a) => a.id !== id);
+  }
+
+  function isOnBudget(b, accountId) {
+    const acct = (b.accounts || []).find((a) => a.id === accountId);
+    return !acct || !acct.offBudget;
+  }
+
+  // Does this transaction add to (or take from) Ready to Assign? Income in an
+  // on-budget account does, as does money coming in from an off-budget
+  // account. Transfers between two on-budget accounts and anything in an
+  // off-budget account do not.
+  function countsAsIncome(b, t) {
+    if (t.envelopeId || !isOnBudget(b, t.accountId)) return false;
+    if (t.transferId && isOnBudget(b, t.toAccountId)) return false;
+    return true;
+  }
+
+  // Envelope a transfer's on-budget leg needs: only when money leaves the
+  // budget for an off-budget account.
+  function transferNeedsEnvelope(b, fromId, toId) {
+    return isOnBudget(b, fromId) && !isOnBudget(b, toId);
   }
 
   function accountBalance(b, id, upToDate) {
@@ -275,8 +298,11 @@
       note: String(note || '').trim(),
       accountId: acctId,
     };
+    const onBudget = isOnBudget(b, acctId);
     if (kind === 'income') return [{ ...base, amount: cents, envelopeId: null }];
     if (kind === 'spend') {
+      // Off-budget accounts have no envelopes.
+      if (!onBudget) return [{ ...base, amount: -cents, envelopeId: null }];
       if (!b.envelopes.some((e) => e.id === envelopeId)) throw new Error('Pick an envelope.');
       return [{ ...base, amount: -cents, envelopeId }];
     }
@@ -287,8 +313,16 @@
       const transferId = newId();
       const toName = b.accounts.find((a) => a.id === toAccountId).name;
       const fromName = b.accounts.find((a) => a.id === acctId).name;
+      // Money leaving the budget (to an off-budget account) is spending from an envelope.
+      let outEnvelope = null;
+      if (transferNeedsEnvelope(b, acctId, toAccountId)) {
+        if (!b.envelopes.some((e) => e.id === envelopeId)) {
+          throw new Error('Money moving to an off-budget account is spending: pick an envelope.');
+        }
+        outEnvelope = envelopeId;
+      }
       return [
-        { ...base, payee: base.payee || `Transfer to ${toName}`, amount: -cents, envelopeId: null, transferId, toAccountId },
+        { ...base, payee: base.payee || `Transfer to ${toName}`, amount: -cents, envelopeId: outEnvelope, transferId, toAccountId },
         { ...base, payee: base.payee || `Transfer from ${fromName}`, amount: cents, envelopeId: null, transferId, accountId: toAccountId, toAccountId: acctId },
       ];
     }
@@ -405,8 +439,9 @@
     const byEnv = new Map();
     for (const t of b.transactions) {
       const i = index.get(monthOf(t.date));
-      if (i === undefined || t.transferId) continue;
+      if (i === undefined) continue;
       if (!t.envelopeId) {
+        if (!countsAsIncome(b, t)) continue;
         income[i] += t.amount;
         continue;
       }
@@ -446,7 +481,7 @@
   // Negative means you have assigned more than you have.
   function readyToAssign(b, month) {
     const income = b.transactions
-      .filter((t) => !t.envelopeId && !t.transferId && monthOf(t.date) <= month)
+      .filter((t) => monthOf(t.date) <= month && countsAsIncome(b, t))
       .reduce((sum, t) => sum + t.amount, 0);
     let assigned = 0;
     for (const m of Object.keys(b.assignments)) {
@@ -713,6 +748,7 @@
     setTarget, normalizeTarget, fundAllTargets, weekdaysInMonth,
     updateEnvelope, deleteEnvelope, updateTransaction, transactionKind,
     addAccount, updateAccount, deleteAccount, accountBalance, reconcileAccount, ensureAccounts,
+    isOnBudget, transferNeedsEnvelope, countsAsIncome,
     addRecurring, removeRecurring, applyRecurring, nextRecurringDate, report,
     parseCsv, importTransactionsCsv,
   };

@@ -113,19 +113,23 @@ function actualToEnvelo(rows, { currency = 'EUR' } = {}) {
     version: 1, currency, accounts: [], envelopes: [], transactions: [], assignments: {}, recurring: [],
   };
   const summary = {
-    accounts: 0, envelopes: 0, transactions: 0, transfers: 0, months: 0,
-    offBudgetSkipped: 0, negativeBudgetsSkipped: 0, uncategorized: 0,
+    accounts: 0, offBudgetAccounts: 0, envelopes: 0, transactions: 0, transfers: 0, months: 0,
+    negativeBudgetsSkipped: 0, uncategorized: 0,
   };
 
-  // Accounts: on-budget ones only. Off-budget accounts do not affect a budget.
+  // Accounts, on and off budget. Off-budget accounts (mortgage, investments)
+  // keep their balance but never touch Ready to Assign or envelopes.
   const accountIds = new Map();
+  const offBudget = new Set();
   for (const a of rows.accounts.filter(live)) {
-    if (flag(a.offbudget)) continue;
     const id = newId();
     accountIds.set(a.id, id);
-    budget.accounts.push({ id, name: String(a.name || 'Account'), reconciledAt: null, reconciledBalance: null });
+    const off = flag(a.offbudget);
+    if (off) offBudget.add(a.id);
+    budget.accounts.push({ id, name: String(a.name || 'Account'), offBudget: off, reconciledAt: null, reconciledBalance: null });
   }
   summary.accounts = budget.accounts.length;
+  summary.offBudgetAccounts = offBudget.size;
 
   // Categories: expense categories become envelopes; income ones feed Ready to Assign.
   const groups = new Map(rows.groups.map((g) => [g.id, g]));
@@ -166,10 +170,7 @@ function actualToEnvelo(rows, { currency = 'EUR' } = {}) {
   for (const t of all) {
     if (flag(t.isParent) || flag(t.is_parent)) continue;
     const accountId = accountIds.get(t.acct);
-    if (!accountId) {
-      summary.offBudgetSkipped++;
-      continue;
-    }
+    if (!accountId) continue; // account was deleted in Actual
     const date = intDate(t.date);
     const amount = Number(t.amount);
     if (!date || !Number.isInteger(amount) || amount === 0) continue;
@@ -187,12 +188,20 @@ function actualToEnvelo(rows, { currency = 'EUR' } = {}) {
     if (flag(t.reconciled)) tx.reconciled = true;
 
     const other = t.transferred_id ? byId.get(t.transferred_id) : null;
-    if (other && accountIds.has(other.acct)) {
-      // Transfer between two on-budget accounts: both legs share an id.
+    const isTransfer = !!(other && accountIds.has(other.acct));
+    if (isTransfer) {
+      // Both legs share an id.
       tx.transferId = `actual:${[t.id, other.id].sort().join(':')}`;
       tx.toAccountId = accountIds.get(other.acct);
       summary.transfers++;
+    }
+    if (offBudget.has(t.acct)) {
+      tx.envelopeId = null; // off-budget: no envelopes
+    } else if (isTransfer && !offBudget.has(other.acct)) {
+      tx.envelopeId = null; // between two on-budget accounts: budget-neutral
     } else {
+      // On-budget spending or income, including transfers to or from an
+      // off-budget account (Actual categorizes those on the budget side).
       const cat = resolveCategory(t.category);
       if (cat && envelopeIds.has(cat)) {
         tx.envelopeId = envelopeIds.get(cat);

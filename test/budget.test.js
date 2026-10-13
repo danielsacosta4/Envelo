@@ -339,3 +339,34 @@ test('report sums spending per envelope and income per month', () => {
   assert.equal(r.rows[0].name, 'Food');
   assert.equal(r.rows[0].total, 8000);
 });
+
+test('off-budget accounts keep a balance but never touch the budget', () => {
+  const b = B.create();
+  const chk = B.addAccount(b, { name: 'Checking', balance: 100000, date: '2026-10-01' });
+  const loan = B.addAccount(b, { name: 'Mortgage', balance: -20000000, date: '2026-10-01', offBudget: true });
+  const inv = B.addAccount(b, { name: 'Investments', balance: 500000, date: '2026-10-01', offBudget: true });
+  const env = B.addEnvelope(b, { name: 'Mortgage' });
+  // Starting balances of off-budget accounts are not income.
+  assert.equal(B.readyToAssign(b, '2026-10'), 100000);
+  // Spending inside an off-budget account needs no envelope and changes nothing.
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-02', amount: 1000, accountId: inv.id });
+  assert.equal(B.readyToAssign(b, '2026-10'), 100000);
+  assert.equal(B.accountBalance(b, inv.id), 499000);
+  // Paying the mortgage from Checking is spending and needs an envelope.
+  assert.throws(() => B.addTransaction(b, { kind: 'transfer', date: '2026-10-03', amount: 50000, accountId: chk.id, toAccountId: loan.id }), /pick an envelope/);
+  B.setAssigned(b, '2026-10', env.id, 50000);
+  B.addTransaction(b, { kind: 'transfer', date: '2026-10-03', amount: 50000, accountId: chk.id, toAccountId: loan.id, envelopeId: env.id });
+  assert.equal(B.envelopeStatus(b, env.id, '2026-10').available, 0);
+  assert.equal(B.accountBalance(b, loan.id), -19950000);
+  assert.equal(B.readyToAssign(b, '2026-10'), 50000);
+  // Money coming into the budget from an off-budget account is income.
+  B.addTransaction(b, { kind: 'transfer', date: '2026-10-04', amount: 20000, accountId: inv.id, toAccountId: chk.id });
+  assert.equal(B.readyToAssign(b, '2026-10'), 70000);
+  // Reports leave off-budget activity out.
+  const r = B.report(b, '2026-10', 1);
+  assert.deepEqual(r.income, [120000]);
+  assert.deepEqual(r.spending, [50000]);
+  // Reconciling an off-budget account does not touch Ready to Assign.
+  B.reconcileAccount(b, inv.id, 480000, '2026-10-05');
+  assert.equal(B.readyToAssign(b, '2026-10'), 70000);
+});

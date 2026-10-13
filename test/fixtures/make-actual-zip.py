@@ -41,6 +41,11 @@ db.executemany(T, [
   ('t10', 'a1', 'c2', -500, 'p2', '', 20261008, 0, 0, None, 1, None, 0, 0),
   ('t11', 'a1', None, -700, None, '', 20261009, 0, 0, None, 0, None, 0, 0),
   ('t12', 'a1', 'ci', 100000, None, '', 20260930, 0, 0, None, 0, None, 1, 0),
+  # Mortgage payment: on-budget leg categorized, off-budget leg not.
+  ('t13', 'a1', 'c1', -50000, None, 'Mortgage', 20261010, 0, 0, None, 0, 't14', 0, 0),
+  ('t14', 'a3', None, 50000, None, '', 20261010, 0, 0, None, 0, 't13', 0, 0),
+  # Off-budget starting balance (a loan) must not reach Ready to Assign.
+  ('t15', 'a3', None, -20000000, None, '', 20260930, 0, 0, None, 0, None, 1, 0),
 ])
 db.executemany('INSERT INTO zero_budgets VALUES (?,?,?,?,?)', [
   ('202610-c1', 202610, 'c1', 90000, 0), ('202610-c3', 202610, 'c3', 30000, 0), ('202610-c2x', 202610, 'c2', -100, 0)])

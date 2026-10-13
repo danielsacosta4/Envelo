@@ -20,30 +20,35 @@ function fixture() {
 function check(engine) {
   const { budget, summary } = importActualZip(fixture(), { currency: 'EUR', engine });
   assert.equal(summary.name, 'Home budget');
-  assert.deepEqual(budget.accounts.map((a) => a.name), ['Checking', 'Savings']);
+  assert.deepEqual(budget.accounts.map((a) => `${a.name}${a.offBudget ? ' (off budget)' : ''}`), ['Checking', 'Savings', 'Mortgage (off budget)']);
+  assert.equal(summary.offBudgetAccounts, 1);
   assert.deepEqual(budget.envelopes.map((e) => `${e.group}/${e.name}`).sort(), ['Bills/Rent', 'Daily/Groceries', 'Imported/Uncategorized']);
-  assert.equal(summary.transactions, 9);
-  assert.equal(summary.offBudgetSkipped, 1);
-  assert.equal(summary.transfers, 1);
+  assert.equal(summary.transactions, 13);
+  assert.equal(summary.transfers, 2);
   assert.equal(summary.uncategorized, 1);
   assert.equal(summary.negativeBudgetsSkipped, 1);
 
   const b = B.fromJSON(budget);
   const env = (n) => b.envelopes.find((e) => e.name === n).id;
   const acct = (n) => b.accounts.find((a) => a.name === n).id;
-  // Income 2500 + starting balance 1000, minus 900 + 300 assigned.
+  // Income 2500 + starting balance 1000, minus 900 + 300 assigned. The
+  // mortgage (off budget) and its starting balance do not count.
   assert.equal(B.readyToAssign(b, '2026-10'), 230000);
   assert.equal(B.assignedIn(b, '2026-10', env('Rent')), 90000);
   assert.equal(B.assignedIn(b, '2026-10', env('Groceries')), 30000);
   // Merged category + split child land in Groceries; the other split child in Rent.
   assert.equal(B.envelopeStatus(b, env('Groceries'), '2026-10').activity, -7000);
-  assert.equal(B.envelopeStatus(b, env('Rent'), '2026-10').activity, -92000);
-  assert.equal(B.accountBalance(b, acct('Checking')), 230300);
+  // Rent: 900 + split 20 + the 500 mortgage payment categorized as Rent.
+  assert.equal(B.envelopeStatus(b, env('Rent'), '2026-10').activity, -142000);
+  assert.equal(B.accountBalance(b, acct('Checking')), 180300);
   assert.equal(B.accountBalance(b, acct('Savings')), 20000);
-  assert.equal(b.transactions.filter((t) => t.transferId).length, 2);
+  // Off-budget: -10 spend + 500 payment in - 200,000 loan starting balance.
+  assert.equal(B.accountBalance(b, acct('Mortgage')), -19951000);
+  assert.equal(b.transactions.filter((t) => t.transferId).length, 4);
+  assert.ok(b.transactions.filter((t) => t.accountId === acct('Mortgage')).every((t) => !t.envelopeId));
   assert.ok(b.transactions.find((t) => t.payee === 'Landlord').reconciled);
   assert.equal(b.transactions.filter((t) => t.payee === 'Market').length, 3);
-  assert.equal(b.transactions.find((t) => t.payee === 'Starting balance').date, '2026-09-30');
+  assert.equal(b.transactions.find((t) => t.payee === 'Starting balance' && t.accountId === acct('Checking')).date, '2026-09-30');
   B.monthView(b, '2026-10');
 }
 

@@ -169,6 +169,7 @@
     $('#empty').hidden = budget.envelopes.length > 0;
 
     renderEnvelopeOptions();
+    syncKind();
     renderTransactions();
     renderAccounts();
     renderRecurring();
@@ -180,14 +181,19 @@
   const accountName = (id) => (budget.accounts.find((a) => a.id === id) || {}).name || 'Unknown account';
 
   function renderAccounts() {
-    const list = budget.accounts;
-    const total = list.reduce((sum, a) => sum + B.accountBalance(budget, a.id), 0);
-    $('#accounts-total').textContent = list.length ? `Total ${money(total)}` : '';
+    // On-budget accounts first, then off-budget ones.
+    const list = [...budget.accounts].sort((a, c) => Number(!!a.offBudget) - Number(!!c.offBudget));
+    const sumOf = (accts) => accts.reduce((sum, a) => sum + B.accountBalance(budget, a.id), 0);
+    const on = list.filter((a) => !a.offBudget);
+    const off = list.filter((a) => a.offBudget);
+    $('#accounts-total').textContent = list.length
+      ? `On budget ${money(sumOf(on))}${off.length ? ` · Off budget ${money(sumOf(off))}` : ''}`
+      : '';
     $('#accounts-list').innerHTML = list.length ? list.map((a) => {
       const bal = B.accountBalance(budget, a.id);
       const rec = a.reconciledAt ? `Reconciled ${esc(a.reconciledAt)} at ${esc(money(a.reconciledBalance))}` : 'Never reconciled';
       return `<div class="account-row">
-        <div><div class="env-name">${esc(a.name)}</div><div class="goal">${rec}</div></div>
+        <div><div class="env-name">${esc(a.name)}${a.offBudget ? '<span class="badge off">Off budget</span>' : ''}</div><div class="goal">${rec}</div></div>
         <div class="acct-bal ${bal < 0 ? 'neg' : ''}">${esc(money(bal))}</div>
         <div class="row acct-actions">
           <button type="button" data-action="reconcile" data-id="${a.id}">Reconcile</button>
@@ -267,8 +273,9 @@
     const names = Object.fromEntries(budget.envelopes.map((e) => [e.id, e.name]));
     $('#tx-count').textContent = txs.length ? `${txs.length} this month` : '';
     $('#tx-list').innerHTML = txs.length ? txs.map((t) => {
-      const where = t.transferId ? 'Transfer'
-        : t.envelopeId ? names[t.envelopeId] || 'Deleted envelope' : 'Income';
+      const where = t.envelopeId ? names[t.envelopeId] || 'Deleted envelope'
+        : t.transferId ? 'Transfer'
+        : B.isOnBudget(budget, t.accountId) ? 'Income' : 'Off budget';
       const label = t.payee || (t.envelopeId ? 'Spending' : 'Income');
       const acct = budget.accounts.length > 1 ? ` · ${esc(accountName(t.accountId))}` : '';
       return `<li>
@@ -466,7 +473,7 @@
     const bal = f.balance.value.trim() ? B.parseMoney(f.balance.value) : 0;
     const ok = attempt(() => {
       if (Number.isNaN(bal)) throw new Error('Balance must be an amount like 1200.00.');
-      B.addAccount(budget, { name: f.acctName.value, balance: bal, date: todayISO() });
+      B.addAccount(budget, { name: f.acctName.value, balance: bal, date: todayISO(), offBudget: f.offBudget.checked });
     });
     if (ok) f.reset();
   });
@@ -518,10 +525,19 @@
   });
 
   document.querySelectorAll('input[name="kind"]').forEach((r) => r.addEventListener('change', syncKind));
+  $('#tx-account').addEventListener('change', syncKind);
+  $('#tx-to').addEventListener('change', syncKind);
   function syncKind() {
     const kind = document.querySelector('input[name="kind"]:checked').value;
-    $('#tx-envelope-field').hidden = kind !== 'spend';
-    $('#tx-envelope').required = kind === 'spend';
+    const from = $('#tx-account').value;
+    const to = $('#tx-to').value;
+    // Envelopes apply to spending in on-budget accounts, and to transfers
+    // that move money out of the budget into an off-budget account.
+    const needsEnvelope = kind === 'spend'
+      ? B.isOnBudget(budget, from)
+      : kind === 'transfer' && !!to && B.transferNeedsEnvelope(budget, from, to);
+    $('#tx-envelope-field').hidden = !needsEnvelope;
+    $('#tx-envelope').required = needsEnvelope;
     $('#tx-to-field').hidden = kind !== 'transfer';
     $('#tx-account-label').textContent = kind === 'transfer' ? 'From account' : 'Account';
     $('#tx-repeat-field').hidden = kind === 'transfer' || !!editingTx;
@@ -580,7 +596,7 @@
         payee: f.payee.value,
         note: f.note.value,
         amount: Math.abs(cents),
-        envelopeId: kind === 'spend' ? f.envelopeId.value : null,
+        envelopeId: $('#tx-envelope-field').hidden ? null : f.envelopeId.value,
         accountId: f.accountId.value || null,
         toAccountId: kind === 'transfer' ? f.toAccountId.value : null,
       };
