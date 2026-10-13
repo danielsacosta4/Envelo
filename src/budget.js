@@ -157,13 +157,14 @@
     deleteEnvelope(b, id, null);
   }
 
-  function updateEnvelope(b, id, { name, group }) {
+  function updateEnvelope(b, id, { name, group, carryOverspending }) {
     const env = b.envelopes.find((e) => e.id === id);
     if (!env) throw new Error('Unknown envelope.');
     const clean = String(name || '').trim();
     if (!clean) throw new Error('Envelope needs a name.');
     env.name = clean;
     env.group = String(group || '').trim() || 'General';
+    if (carryOverspending !== undefined) env.carryOverspending = !!carryOverspending;
   }
 
   // Delete an envelope. Its transactions and recurring rules move to `moveToId`.
@@ -467,7 +468,9 @@
   function setAssigned(b, month, envId, cents) {
     if (!MONTH_RE.test(month)) throw new Error('Bad month.');
     if (!b.envelopes.some((e) => e.id === envId)) throw new Error('Unknown envelope.');
-    if (!Number.isInteger(cents) || cents < 0) throw new Error('Assignment cannot be negative.');
+    // Negative amounts are allowed (as in YNAB and Actual): they move money
+    // back to Ready to Assign.
+    if (!Number.isInteger(cents)) throw new Error('Assigned amount must be a number.');
     const row = (b.assignments[month] ||= {});
     if (cents === 0) {
       delete row[envId];
@@ -487,30 +490,58 @@
     for (const m of Object.keys(b.assignments)) {
       if (m <= month) for (const v of Object.values(b.assignments[m])) assigned += v;
     }
-    return income - assigned;
+    // Overspending from earlier months is taken from Ready to Assign.
+    let overspent = 0;
+    for (const env of b.envelopes) overspent += envelopeLedger(b, env, month).absorbed;
+    return income - assigned - overspent;
+  }
+
+  function firstMonth(b) {
+    let first = null;
+    for (const t of b.transactions) {
+      const m = monthOf(t.date);
+      if (!first || m < first) first = m;
+    }
+    for (const m of Object.keys(b.assignments)) if (!first || m < first) first = m;
+    return first;
+  }
+
+  // Walk an envelope month by month up to `month`. Like YNAB and Actual, an
+  // envelope overspent at the end of a month starts the next month at zero,
+  // and the overspent amount comes out of the next month's Ready to Assign
+  // (counted in `absorbed`). Envelopes with carryOverspending keep the
+  // negative balance instead.
+  function envelopeLedger(b, env, month) {
+    const activity = new Map();
+    for (const t of b.transactions) {
+      if (t.envelopeId !== env.id) continue;
+      const m = monthOf(t.date);
+      if (m <= month) activity.set(m, (activity.get(m) || 0) + t.amount);
+    }
+    const first = firstMonth(b);
+    let end = 0;
+    let absorbed = 0;
+    let start = 0;
+    let assigned = 0;
+    let act = 0;
+    for (let m = first && first < month ? first : month; m <= month; m = shiftMonth(m, 1)) {
+      start = end;
+      if (start < 0 && !env.carryOverspending) {
+        absorbed += -start;
+        start = 0;
+      }
+      assigned = assignedIn(b, m, env.id);
+      act = activity.get(m) || 0;
+      end = start + assigned + act;
+    }
+    return { carryover: start, assigned, activity: act, available: end, absorbed };
   }
 
   function envelopeStatus(b, envId, month) {
     const env = b.envelopes.find((e) => e.id === envId);
     if (!env) throw new Error('Unknown envelope.');
 
-    let assignedToDate = 0;
-    for (const m of Object.keys(b.assignments)) {
-      if (m <= month) assignedToDate += b.assignments[m][envId] || 0;
-    }
-
-    let activityToDate = 0;
-    let activityThisMonth = 0;
-    for (const t of b.transactions) {
-      if (t.envelopeId !== envId) continue;
-      const m = monthOf(t.date);
-      if (m <= month) activityToDate += t.amount;
-      if (m === month) activityThisMonth += t.amount;
-    }
-
-    const available = assignedToDate + activityToDate;
-    const assigned = assignedIn(b, month, envId);
-    const carryover = available - assigned - activityThisMonth;
+    const { carryover, assigned, activity: activityThisMonth, available } = envelopeLedger(b, env, month);
     const target = envTarget(env);
     const need = target ? targetNeed(target, month, carryover, assigned) : null;
     let progress = null;

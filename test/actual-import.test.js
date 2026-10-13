@@ -26,16 +26,16 @@ function check(engine) {
   assert.equal(summary.transactions, 13);
   assert.equal(summary.transfers, 2);
   assert.equal(summary.uncategorized, 1);
-  assert.equal(summary.negativeBudgetsSkipped, 1);
 
   const b = B.fromJSON(budget);
   const env = (n) => b.envelopes.find((e) => e.name === n).id;
   const acct = (n) => b.accounts.find((a) => a.name === n).id;
-  // Income 2500 + starting balance 1000, minus 900 + 300 assigned. The
+  // Income 2500 + starting balance 1000, minus 900 + 300 - 1 assigned. The
   // mortgage (off budget) and its starting balance do not count.
-  assert.equal(B.readyToAssign(b, '2026-10'), 230000);
+  assert.equal(B.readyToAssign(b, '2026-10'), 230100);
   assert.equal(B.assignedIn(b, '2026-10', env('Rent')), 90000);
-  assert.equal(B.assignedIn(b, '2026-10', env('Groceries')), 30000);
+  // 300 from the merged category plus a negative -1.
+  assert.equal(B.assignedIn(b, '2026-10', env('Groceries')), 29900);
   // Merged category + split child land in Groceries; the other split child in Rent.
   assert.equal(B.envelopeStatus(b, env('Groceries'), '2026-10').activity, -7000);
   // Rent: 900 + split 20 + the 500 mortgage payment categorized as Rent.

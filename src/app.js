@@ -482,8 +482,8 @@
     const t = ev.target;
     if (t.matches('input[data-env]')) {
       const cents = B.parseMoney(t.value);
-      if (Number.isNaN(cents) || cents < 0) {
-        showError('Assigned amount must be zero or more.');
+      if (Number.isNaN(cents)) {
+        showError('Assigned amount must be a number like 120.00.');
         render();
         return;
       }
@@ -695,6 +695,7 @@
     $('#target-error').hidden = true;
     f.envName.value = env.name;
     f.envGroup.value = env.group;
+    f.carryOverspending.checked = !!env.carryOverspending;
     const others = budget.envelopes.filter((e) => e.id !== envId);
     const used = budget.transactions.some((t) => t.envelopeId === envId)
       || (budget.recurring || []).some((r) => r.envelopeId === envId);
@@ -734,7 +735,9 @@
       if (type === 'weekly') target.weekday = Number(f.weekday.value);
     }
     try {
-      B.updateEnvelope(budget, editingTarget, { name: f.envName.value, group: f.envGroup.value });
+      B.updateEnvelope(budget, editingTarget, {
+        name: f.envName.value, group: f.envGroup.value, carryOverspending: f.carryOverspending.checked,
+      });
       B.setTarget(budget, editingTarget, target);
     } catch (err) {
       $('#target-error').textContent = err.message;

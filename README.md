@@ -110,5 +110,7 @@ validation, rate limiting, static file access) with Node's built-in test runner.
 - Changes are saved to the server about a third of a second after you make
   them. If the server is unreachable, the app keeps your changes on screen and
   retries.
-- Overspent envelopes stay negative and carry into later months until you
-  assign money to them.
+- Overspending works like YNAB and Actual: an envelope overspent at the end
+  of a month starts the next month at zero, and the overspent amount comes out
+  of the next month's Ready to Assign. Tick "Carry overspending" on an
+  envelope to keep its negative balance instead.

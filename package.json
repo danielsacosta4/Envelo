@@ -1,6 +1,6 @@
 {
   "name": "envelo",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "private": true,
   "description": "Self-hosted envelope budgeting with accounts, targets and reports",
   "scripts": {

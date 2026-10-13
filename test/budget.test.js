@@ -54,12 +54,34 @@ test('spending in the current month reduces available, not assigned', () => {
   assert.equal(s.overspent, false);
 });
 
-test('overspending is flagged and carries negative into later months', () => {
+test('overspending resets to zero next month and comes out of Ready to Assign', () => {
   const { b, food } = sample();
+  B.addTransaction(b, { kind: 'income', date: '2026-10-01', amount: 50000 });
   B.setAssigned(b, '2026-10', food.id, 10000);
   B.addTransaction(b, { kind: 'spend', date: '2026-10-05', amount: 25000, envelopeId: food.id });
   assert.equal(B.envelopeStatus(b, food.id, '2026-10').overspent, true);
+  assert.equal(B.envelopeStatus(b, food.id, '2026-10').available, -15000);
+  // October's Ready to Assign is unchanged; November pays for the overspending.
+  assert.equal(B.readyToAssign(b, '2026-10'), 40000);
+  assert.equal(B.envelopeStatus(b, food.id, '2026-11').available, 0);
+  assert.equal(B.envelopeStatus(b, food.id, '2026-11').carryover, 0);
+  assert.equal(B.readyToAssign(b, '2026-11'), 25000);
+});
+
+test('an envelope can carry its overspending forward instead', () => {
+  const { b, food } = sample();
+  B.updateEnvelope(b, food.id, { name: 'Groceries', group: 'Daily', carryOverspending: true });
+  B.setAssigned(b, '2026-10', food.id, 10000);
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-05', amount: 25000, envelopeId: food.id });
   assert.equal(B.envelopeStatus(b, food.id, '2026-11').available, -15000);
+  assert.equal(B.readyToAssign(b, '2026-11'), -10000);
+});
+
+test('negative assigned amounts move money back to Ready to Assign', () => {
+  const { b, food } = sample();
+  B.addTransaction(b, { kind: 'income', date: '2026-10-01', amount: 10000 });
+  B.setAssigned(b, '2026-10', food.id, -500);
+  assert.equal(B.readyToAssign(b, '2026-10'), 10500);
 });
 
 test('goal shows how much is still needed to reach the target balance', () => {

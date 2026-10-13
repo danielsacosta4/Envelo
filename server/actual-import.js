@@ -114,7 +114,7 @@ function actualToEnvelo(rows, { currency = 'EUR' } = {}) {
   };
   const summary = {
     accounts: 0, offBudgetAccounts: 0, envelopes: 0, transactions: 0, transfers: 0, months: 0,
-    negativeBudgetsSkipped: 0, uncategorized: 0,
+    uncategorized: 0,
   };
 
   // Accounts, on and off budget. Off-budget accounts (mortgage, investments)
@@ -223,11 +223,13 @@ function actualToEnvelo(rows, { currency = 'EUR' } = {}) {
     const month = intMonth(z.month);
     const envId = envelopeIds.get(resolveCategory(z.category));
     const amount = Number(z.amount);
-    if (!month || !envId || !Number.isInteger(amount) || amount === 0) continue;
-    if (amount < 0) {
-      summary.negativeBudgetsSkipped++;
-      continue;
+    // Actual's "rollover overspending" keeps a category's negative balance.
+    if (envId && flag(z.carryover)) {
+      const env = budget.envelopes.find((e) => e.id === envId);
+      if (env) env.carryOverspending = true;
     }
+    if (!month || !envId || !Number.isInteger(amount) || amount === 0) continue;
+    // Negative amounts are kept: in Actual they move money back to To Budget.
     budget.assignments[month] = budget.assignments[month] || {};
     budget.assignments[month][envId] = (budget.assignments[month][envId] || 0) + amount;
     months.add(month);
