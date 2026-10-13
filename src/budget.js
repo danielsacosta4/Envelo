@@ -24,21 +24,115 @@
     return { version: 1, currency: 'EUR', envelopes: [], transactions: [], assignments: {} };
   }
 
-  function addEnvelope(b, { name, group, goal }) {
+  function addEnvelope(b, { name, group, goal, target }) {
     const clean = String(name || '').trim();
     if (!clean) throw new Error('Envelope needs a name.');
-    const target = goal == null || goal === '' ? null : Number(goal);
-    if (target !== null && (!Number.isInteger(target) || target <= 0)) {
-      throw new Error('Goal must be a positive amount.');
-    }
+    let t = target ? normalizeTarget(target) : null;
+    if (!t && goal != null && goal !== '') t = normalizeTarget({ type: 'balance', amount: Number(goal) });
     const env = {
       id: newId(),
       name: clean,
       group: String(group || '').trim() || 'General',
-      goal: target,
+      target: t,
     };
     b.envelopes.push(env);
     return env;
+  }
+
+  // Targets
+  //   monthly   { amount, until? }      set aside `amount` every month (until a month, optional)
+  //   weekly    { amount, weekday }     set aside `amount` for each weekday 0-6 (0 = Sunday) in the month
+  //   refill    { amount }              top the envelope up to `amount` every month
+  //   balance   { amount }              have `amount` in the envelope, no deadline
+  //   byDate    { amount, date }        have `amount` by `date` (YYYY-MM), spread over the months left
+  //   repeating { amount, every, next } a bill of `amount` due every `every` months, next due `next`
+  // Shortfalls from earlier months are spread over the months left, so a skipped
+  // month raises what later months ask for.
+  const TARGET_TYPES = ['monthly', 'weekly', 'refill', 'balance', 'byDate', 'repeating'];
+
+  function normalizeTarget(t) {
+    if (!t || !TARGET_TYPES.includes(t.type)) throw new Error('Pick a target type.');
+    const amount = Number(t.amount);
+    if (!Number.isInteger(amount) || amount <= 0) throw new Error('Target amount must be greater than zero.');
+    const out = { type: t.type, amount };
+    if (t.type === 'monthly' && t.until) {
+      if (!MONTH_RE.test(t.until)) throw new Error('Until must be a month.');
+      out.until = t.until;
+    }
+    if (t.type === 'weekly') {
+      const wd = Number(t.weekday);
+      if (!Number.isInteger(wd) || wd < 0 || wd > 6) throw new Error('Pick a day of the week.');
+      out.weekday = wd;
+    }
+    if (t.type === 'byDate') {
+      if (!MONTH_RE.test(t.date || '')) throw new Error('Pick the month you want to reach the target.');
+      out.date = t.date;
+    }
+    if (t.type === 'repeating') {
+      const every = Number(t.every);
+      if (!Number.isInteger(every) || every < 1 || every > 120) throw new Error('Repeat every 1 to 120 months.');
+      if (!MONTH_RE.test(t.next || '')) throw new Error('Pick the month the bill is next due.');
+      out.every = every;
+      out.next = t.next;
+    }
+    return out;
+  }
+
+  function setTarget(b, envId, target) {
+    const env = b.envelopes.find((e) => e.id === envId);
+    if (!env) throw new Error('Unknown envelope.');
+    env.target = target ? normalizeTarget(target) : null;
+    delete env.goal;
+  }
+
+  const monthsBetween = (a, b) => {
+    const [ay, am] = a.split('-').map(Number);
+    const [by, bm] = b.split('-').map(Number);
+    return (by - ay) * 12 + (bm - am);
+  };
+
+  function weekdaysInMonth(month, weekday) {
+    const [y, m] = month.split('-').map(Number);
+    const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    let n = 0;
+    for (let d = 1; d <= days; d++) if (new Date(Date.UTC(y, m - 1, d)).getUTCDay() === weekday) n++;
+    return n;
+  }
+
+  // Next due month on or after `month` for a repeating bill.
+  function nextDue(t, month) {
+    let due = t.next;
+    while (due < month) due = shiftMonth(due, t.every);
+    return due;
+  }
+
+  // What the target asks for this month, given the envelope's balance at the
+  // start of the month (carryover) and what is assigned this month.
+  function targetNeed(t, month, carryover, assigned) {
+    const ceilDiv = (a, n) => Math.ceil(a / n);
+    switch (t.type) {
+      case 'monthly': {
+        if (t.until && month > t.until) return { needed: 0, monthAmount: 0 };
+        return { needed: Math.max(0, t.amount - assigned), monthAmount: t.amount };
+      }
+      case 'weekly': {
+        const monthAmount = t.amount * weekdaysInMonth(month, t.weekday);
+        return { needed: Math.max(0, monthAmount - assigned), monthAmount };
+      }
+      case 'refill':
+      case 'balance':
+        return { needed: Math.max(0, t.amount - carryover - assigned), monthAmount: null };
+      case 'byDate':
+      case 'repeating': {
+        const due = t.type === 'byDate' ? t.date : nextDue(t, month);
+        const monthsLeft = Math.max(1, monthsBetween(month, due) + 1);
+        const missing = Math.max(0, t.amount - carryover);
+        const perMonth = ceilDiv(missing, monthsLeft);
+        return { needed: Math.max(0, perMonth - assigned), monthAmount: perMonth, due };
+      }
+      default:
+        return { needed: 0, monthAmount: null };
+    }
   }
 
   function removeEnvelope(b, id) {
@@ -137,19 +231,58 @@
 
     const available = assignedToDate + activityToDate;
     const assigned = assignedIn(b, month, envId);
+    const carryover = available - assigned - activityThisMonth;
+    const target = envTarget(env);
+    const need = target ? targetNeed(target, month, carryover, assigned) : null;
+    let progress = null;
+    if (target) {
+      const goalAmount = ['monthly', 'weekly'].includes(target.type) ? need.monthAmount : target.amount;
+      const have = ['monthly', 'weekly'].includes(target.type) ? assigned
+        : target.type === 'refill' ? carryover + assigned
+        : available;
+      progress = goalAmount ? Math.max(0, Math.min(1, have / goalAmount)) : 1;
+    }
     return {
       id: env.id,
       name: env.name,
       group: env.group,
-      goal: env.goal,
-      carryover: available - assigned - activityThisMonth,
+      target,
+      carryover,
       assigned,
       activity: activityThisMonth,
       available,
       overspent: available < 0,
-      // How much more is needed to reach the target balance (null if no goal).
-      needed: env.goal == null ? null : Math.max(0, env.goal - available),
+      // What the target still asks for this month (null when there is no target).
+      needed: need ? need.needed : null,
+      underfunded: !!need && need.needed > 0,
+      monthAmount: need ? need.monthAmount : null,
+      due: need ? need.due || null : null,
+      progress,
     };
+  }
+
+  // Older data stored a plain goal balance on the envelope.
+  function envTarget(env) {
+    if (env.target) return env.target;
+    if (env.goal) return { type: 'balance', amount: env.goal };
+    return null;
+  }
+
+  // Assign what each underfunded target needs, in order, while Ready to Assign
+  // has money. Returns the total assigned.
+  function fundAllTargets(b, month) {
+    let left = readyToAssign(b, month);
+    let total = 0;
+    for (const env of b.envelopes) {
+      if (left <= 0) break;
+      const st = envelopeStatus(b, env.id, month);
+      if (!st.underfunded) continue;
+      const give = Math.min(st.needed, left);
+      setAssigned(b, month, env.id, st.assigned + give);
+      left -= give;
+      total += give;
+    }
+    return total;
   }
 
   function monthView(b, month) {
@@ -162,6 +295,7 @@
     return {
       month,
       readyToAssign: readyToAssign(b, month),
+      underfunded: [...groups.values()].flat().reduce((sum, e) => sum + (e.needed || 0), 0),
       groups: [...groups].map(([name, envelopes]) => ({ name, envelopes })),
     };
   }
@@ -318,6 +452,7 @@
     create, addEnvelope, removeEnvelope, addTransaction, removeTransaction,
     setAssigned, assignedIn, readyToAssign, envelopeStatus, monthView,
     shiftMonth, parseMoney, formatMoney, toInput, fromJSON,
+    setTarget, normalizeTarget, fundAllTargets, weekdaysInMonth,
     parseCsv, importTransactionsCsv,
   };
 

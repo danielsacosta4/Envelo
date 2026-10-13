@@ -159,3 +159,94 @@ test('CSV import supports Inflow/Outflow columns and DD/MM/YYYY dates', () => {
 test('CSV import rejects files without the needed columns', () => {
   assert.throws(() => B.importTransactionsCsv(B.create(), 'foo,bar\n1,2'), /Date and Amount/);
 });
+
+function withTarget(target) {
+  const b = B.create();
+  const env = B.addEnvelope(b, { name: 'T', group: 'G' });
+  B.setTarget(b, env.id, target);
+  return { b, id: env.id, st: (m) => B.envelopeStatus(b, env.id, m) };
+}
+
+test('monthly target asks for the amount every month, until its end', () => {
+  const { b, id, st } = withTarget({ type: 'monthly', amount: 5000, until: '2026-11' });
+  assert.equal(st('2026-10').needed, 5000);
+  B.setAssigned(b, '2026-10', id, 2000);
+  assert.equal(st('2026-10').needed, 3000);
+  assert.equal(st('2026-10').underfunded, true);
+  B.setAssigned(b, '2026-10', id, 5000);
+  assert.equal(st('2026-10').needed, 0);
+  assert.equal(st('2026-11').needed, 5000);
+  assert.equal(st('2026-12').needed, 0);
+});
+
+test('weekly target counts the weekday in the month', () => {
+  // October 2026 has 4 Mondays, November 2026 has 5.
+  const { st } = withTarget({ type: 'weekly', amount: 2000, weekday: 1 });
+  assert.equal(B.weekdaysInMonth('2026-10', 1), 4);
+  assert.equal(st('2026-10').needed, 8000);
+  assert.equal(B.weekdaysInMonth('2026-11', 1), 5);
+  assert.equal(st('2026-11').needed, 10000);
+});
+
+test('refill target tops up to the amount, ignoring this month\'s spending', () => {
+  const { b, id, st } = withTarget({ type: 'refill', amount: 40000 });
+  B.setAssigned(b, '2026-10', id, 40000);
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-10', amount: 30000, envelopeId: id });
+  assert.equal(st('2026-10').needed, 0);
+  // November starts with 100 left, so it needs 300 to refill.
+  assert.equal(st('2026-11').needed, 30000);
+});
+
+test('balance target needs whatever is missing', () => {
+  const { b, id, st } = withTarget({ type: 'balance', amount: 200000 });
+  B.setAssigned(b, '2026-10', id, 50000);
+  assert.equal(st('2026-10').needed, 150000);
+  assert.ok(Math.abs(st('2026-10').progress - 0.25) < 1e-9);
+});
+
+test('by-date target spreads the amount and asks more after a missed month', () => {
+  const { b, id, st } = withTarget({ type: 'byDate', amount: 120000, date: '2027-03' });
+  // Oct..Mar = 6 months
+  assert.equal(st('2026-10').needed, 20000);
+  B.setAssigned(b, '2026-10', id, 20000);
+  // Skip November entirely.
+  assert.equal(st('2026-11').needed, 20000);
+  // December: 100000 missing over 4 months = 25000
+  assert.equal(st('2026-12').needed, 25000);
+  // After the date, everything missing is due at once.
+  assert.equal(st('2027-05').needed, 100000);
+});
+
+test('repeating bill restarts after it is paid', () => {
+  const { b, id, st } = withTarget({ type: 'repeating', amount: 48000, every: 12, next: '2027-03' });
+  assert.equal(st('2026-10').needed, 8000); // 480 over 6 months
+  assert.equal(st('2026-10').due, '2027-03');
+  for (const m of ['2026-10', '2026-11', '2026-12', '2027-01', '2027-02', '2027-03']) {
+    B.setAssigned(b, m, id, 8000);
+  }
+  B.addTransaction(b, { kind: 'spend', date: '2027-03-15', amount: 48000, envelopeId: id });
+  assert.equal(st('2027-04').due, '2028-03');
+  assert.equal(st('2027-04').needed, 4000); // 480 over 12 months
+});
+
+test('fund all targets assigns what is needed while money lasts', () => {
+  const b = B.create();
+  const a = B.addEnvelope(b, { name: 'A', target: { type: 'monthly', amount: 30000 } });
+  const c = B.addEnvelope(b, { name: 'C', target: { type: 'monthly', amount: 50000 } });
+  B.addTransaction(b, { kind: 'income', date: '2026-10-01', amount: 60000 });
+  assert.equal(B.monthView(b, '2026-10').underfunded, 80000);
+  assert.equal(B.fundAllTargets(b, '2026-10'), 60000);
+  assert.equal(B.assignedIn(b, '2026-10', a.id), 30000);
+  assert.equal(B.assignedIn(b, '2026-10', c.id), 30000);
+  assert.equal(B.readyToAssign(b, '2026-10'), 0);
+});
+
+test('targets validate their fields', () => {
+  const b = B.create();
+  const e = B.addEnvelope(b, { name: 'X' });
+  assert.throws(() => B.setTarget(b, e.id, { type: 'byDate', amount: 100 }), /month/);
+  assert.throws(() => B.setTarget(b, e.id, { type: 'monthly', amount: 0 }), /greater than zero/);
+  assert.throws(() => B.setTarget(b, e.id, { type: 'repeating', amount: 100, every: 0, next: '2027-01' }), /1 to 120/);
+  B.setTarget(b, e.id, null);
+  assert.equal(B.envelopeStatus(b, e.id, '2026-10').needed, null);
+});

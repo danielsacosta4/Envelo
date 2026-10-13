@@ -84,7 +84,7 @@
           <label>Name <input type="text" name="name" maxlength="60" required placeholder="Groceries"></label>
           <label>Group <input type="text" name="group" maxlength="40" list="group-list" placeholder="Daily"></label>
           <datalist id="group-list"></datalist>
-          <label>Goal balance <span class="optional">(optional)</span>
+          <label>Target balance <span class="optional">(optional)</span>
             <input type="text" name="goal" inputmode="decimal" placeholder="e.g. 500.00">
           </label>
           <button type="submit" class="primary">Add envelope</button>
@@ -133,6 +133,50 @@
     </aside>
   </main>
   </div>
+
+  <dialog id="target-dialog" class="target-dialog">
+    <form id="target-form" class="stack" autocomplete="off">
+      <h2 id="target-title">Target</h2>
+      <p id="target-error" class="auth-message" hidden></p>
+      <label>Type
+        <select name="type">
+          <option value="">No target</option>
+          <option value="monthly">Set aside an amount every month</option>
+          <option value="weekly">Set aside an amount every week</option>
+          <option value="refill">Refill up to an amount every month</option>
+          <option value="balance">Have a balance</option>
+          <option value="byDate">Have a balance by a date</option>
+          <option value="repeating">Repeating bill</option>
+        </select>
+      </label>
+      <label data-for="monthly weekly refill balance byDate repeating">Amount
+        <input type="text" name="amount" inputmode="decimal" placeholder="0.00">
+      </label>
+      <label data-for="weekly">Every
+        <select name="weekday">
+          <option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option>
+          <option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option>
+          <option value="0">Sunday</option>
+        </select>
+      </label>
+      <label data-for="monthly">Until <span class="optional">(optional)</span>
+        <input type="month" name="until">
+      </label>
+      <label data-for="byDate">By
+        <input type="month" name="date">
+      </label>
+      <label data-for="repeating">Every how many months
+        <input type="number" name="every" min="1" max="120" value="12">
+      </label>
+      <label data-for="repeating">Next due
+        <input type="month" name="next">
+      </label>
+      <div class="row">
+        <button type="submit" class="primary">Save target</button>
+        <button type="button" data-action="close-target">Cancel</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="src/budget.js"></script>
   <script src="src/app.js"></script>

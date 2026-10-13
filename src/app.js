@@ -123,22 +123,24 @@
     const ready = $('#ready');
     ready.classList.toggle('warn', view.readyToAssign < 0);
     ready.innerHTML = `<div class="label">Ready to assign</div>
-      <div class="amount">${esc(money(view.readyToAssign))}</div>`;
+      <div class="amount">${esc(money(view.readyToAssign))}</div>
+      ${view.underfunded > 0 ? `<div class="under-line">Targets need ${esc(money(view.underfunded))} this month
+        <button type="button" data-action="fund-all">Fund all targets</button></div>` : ''}`;
 
     const rows = [];
     view.groups.forEach((g, gi) => {
       const tone = `tone-${gi % 3}`;
       rows.push(`<tr class="group ${tone}"><td colspan="5">${esc(g.name)}</td></tr>`);
       for (const e of g.envelopes) {
-        const availClass = e.available < 0 ? 'neg' : e.available === 0 ? 'zero' : '';
-        const goal = e.goal == null ? '' : e.needed > 0
-          ? `<div class="goal">Goal ${esc(money(e.goal))} · needs ${esc(money(e.needed))}</div>`
-          : `<div class="goal done">Goal ${esc(money(e.goal))} · reached</div>`;
-        const fund = e.needed > 0
-          ? `<button type="button" class="fund" data-action="fund" data-id="${e.id}" data-amount="${e.needed}">Fund goal</button>`
+        const availClass = e.available < 0 || e.underfunded ? 'neg' : e.available === 0 ? 'zero' : '';
+        const goal = e.target ? `<div class="goal ${e.underfunded ? 'short' : 'done'}">${esc(describeTarget(e))}
+            · ${e.underfunded ? `needs ${esc(money(e.needed))} this month` : 'funded'}</div>
+          <div class="tbar"><i style="width:${Math.round((e.progress || 0) * 100)}%"></i></div>` : '';
+        const fund = e.underfunded
+          ? `<button type="button" class="fund" data-action="fund" data-id="${e.id}" data-amount="${e.needed}">Assign ${esc(money(e.needed))}</button>`
           : '';
         rows.push(`<tr class="${tone}">
-          <td class="env-cell"><div class="env-name">${esc(e.name)}${e.overspent ? '<span class="badge">Overspent</span>' : ''}</div>${goal}</td>
+          <td class="env-cell"><div class="env-name"><button type="button" class="env-link" data-action="edit-target" data-id="${e.id}" title="Set a target">${esc(e.name)}</button>${e.overspent ? '<span class="badge">Overspent</span>' : ''}</div>${goal}</td>
           <td class="num" data-label="Assigned"><input type="text" inputmode="decimal" aria-label="Assigned to ${esc(e.name)}"
               value="${B.toInput(e.assigned)}" data-env="${e.id}"></td>
           <td class="num" data-label="Spent">${esc(money(e.activity))}</td>
@@ -268,6 +270,14 @@
       case 'delete-tx':
         if (confirm('Delete this transaction?')) attempt(() => B.removeTransaction(budget, btn.dataset.id));
         break;
+      case 'fund-all': {
+        let total = 0;
+        const ok = attempt(() => { total = B.fundAllTargets(budget, month); });
+        if (ok && total === 0) showError('There is no money in Ready to Assign to fund targets.');
+        break;
+      }
+      case 'edit-target': openTarget(btn.dataset.id); break;
+      case 'close-target': $('#target-dialog').close(); break;
       case 'export': exportBackup(); break;
       case 'import': $('#import-file').click(); break;
       case 'import-actual': $('#import-actual-file').click(); break;
@@ -385,6 +395,78 @@
       showError('Import failed: ' + err.message);
     }
   }
+
+  const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  function fmtMonth(m) {
+    const [y, mo] = m.split('-').map(Number);
+    return new Date(y, mo - 1, 1).toLocaleString(undefined, { month: 'short', year: 'numeric' });
+  }
+
+  function describeTarget(e) {
+    const t = e.target;
+    const amt = money(t.amount);
+    switch (t.type) {
+      case 'monthly': return `${amt} every month${t.until ? ` until ${fmtMonth(t.until)}` : ''}`;
+      case 'weekly': return `${amt} every ${WEEKDAYS[t.weekday]} (${money(e.monthAmount)} this month)`;
+      case 'refill': return `Refill up to ${amt}`;
+      case 'balance': return `Have ${amt}`;
+      case 'byDate': return `Have ${amt} by ${fmtMonth(t.date)}`;
+      case 'repeating': return `${amt} every ${t.every === 1 ? 'month' : `${t.every} months`}, due ${fmtMonth(e.due)}`;
+      default: return '';
+    }
+  }
+
+  let editingTarget = null;
+  function openTarget(envId) {
+    const env = budget.envelopes.find((e) => e.id === envId);
+    if (!env) return;
+    editingTarget = envId;
+    const t = env.target || (env.goal ? { type: 'balance', amount: env.goal } : null);
+    const f = $('#target-form');
+    $('#target-title').textContent = `Target for ${env.name}`;
+    f.type.value = t ? t.type : '';
+    f.amount.value = t ? B.toInput(t.amount) : '';
+    f.until.value = t && t.until ? t.until : '';
+    f.date.value = t && t.date ? t.date : '';
+    f.every.value = t && t.every ? t.every : 12;
+    f.next.value = t && t.next ? t.next : month;
+    f.weekday.value = t && t.weekday != null ? t.weekday : 1;
+    syncTargetFields();
+    $('#target-dialog').showModal();
+  }
+
+  function syncTargetFields() {
+    const type = $('#target-form').type.value;
+    document.querySelectorAll('#target-form [data-for]').forEach((el) => {
+      el.hidden = !el.dataset.for.split(' ').includes(type);
+    });
+  }
+  $('#target-form').type.addEventListener('change', syncTargetFields);
+
+  $('#target-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    const type = f.type.value;
+    let target = null;
+    if (type) {
+      const amount = B.parseMoney(f.amount.value);
+      target = { type, amount: Number.isNaN(amount) ? 0 : amount };
+      if (type === 'monthly' && f.until.value) target.until = f.until.value;
+      if (type === 'byDate') target.date = f.date.value;
+      if (type === 'repeating') { target.every = Number(f.every.value); target.next = f.next.value; }
+      if (type === 'weekly') target.weekday = Number(f.weekday.value);
+    }
+    try {
+      B.setTarget(budget, editingTarget, target);
+    } catch (err) {
+      $('#target-error').textContent = err.message;
+      $('#target-error').hidden = false;
+      return;
+    }
+    $('#target-error').hidden = true;
+    $('#target-dialog').close();
+    attempt(() => {});
+  });
 
   async function importActual(file) {
     if (!file) return;
