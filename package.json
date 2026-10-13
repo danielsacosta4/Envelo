@@ -4,7 +4,8 @@
   "private": true,
   "description": "Envelope budgeting that runs in the browser",
   "scripts": {
-    "test": "node --test test/budget.test.js"
+    "start": "node server/server.js",
+    "test": "node --test test/budget.test.js test/server.test.js"
   },
   "license": "UNLICENSED"
 }

@@ -4,12 +4,16 @@
 # Run on the Proxmox host as root:
 #   bash -c "$(curl -fsSL https://raw.githubusercontent.com/danielsacosta4/Envelo/main/scripts/install-proxmox.sh)"
 #
+# The container runs the Envelo server as a systemd service. Accounts and
+# budgets are stored in /var/lib/envelo inside the container.
+#
 # Optional overrides (environment variables):
 #   CTID=120            container ID (default: next free ID)
 #   HOSTNAME_CT=envelo  container hostname
 #   CORES=1  MEMORY=512  DISK_GB=2
 #   STORAGE=local-lvm   storage for the root disk
 #   BRIDGE=vmbr0        network bridge
+#   PORT=80             port the app listens on inside the container
 #   REF=main            Git branch or tag to install
 set -Eeuo pipefail
 
@@ -20,6 +24,7 @@ MEMORY="${MEMORY:-512}"
 DISK_GB="${DISK_GB:-2}"
 STORAGE="${STORAGE:-local-lvm}"
 BRIDGE="${BRIDGE:-vmbr0}"
+PORT="${PORT:-80}"
 REF="${REF:-main}"
 REPO="danielsacosta4/Envelo"
 TEMPLATE_STORE="local"
@@ -68,46 +73,65 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 pct exec "$CTID" -- getent hosts deb.debian.org >/dev/null 2>&1 \
-  || die "Container $CTID has no working network. Check the bridge and DHCP, then re-run with CTID=$CTID after destroying it."
+  || die "Container $CTID has no working network. Check the bridge and DHCP, then destroy it (pct destroy $CTID) and re-run."
 
-msg "Installing nginx"
-pct exec "$CTID" -- bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq nginx curl ca-certificates tar >/dev/null'
+msg "Installing Node.js and tools"
+pct exec "$CTID" -- bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq nodejs curl ca-certificates tar >/dev/null'
 
-msg "Fetching Envelo ($REF)"
-pct exec "$CTID" -- bash -c "
-  set -Eeuo pipefail
-  rm -rf /var/www/envelo && mkdir -p /var/www/envelo
-  curl -fsSL 'https://codeload.github.com/$REPO/tar.gz/refs/heads/$REF' | tar xz -C /var/www/envelo --strip-components=1
-  cd /var/www/envelo
-  # Serve only the app. Tests, design mockups and repo metadata stay out of the web root.
-  rm -rf test design scripts .git .github package.json README.md
-"
+msg "Installing Envelo ($REF)"
+pct exec "$CTID" -- bash -c "cat > /usr/local/bin/envelo-update <<'UPDATER'
+#!/usr/bin/env bash
+# Fetch the latest Envelo code and restart the service. Data in /var/lib/envelo is kept.
+set -Eeuo pipefail
+REF=\"\${1:-$REF}\"
+TMP=\"\$(mktemp -d)\"
+trap 'rm -rf \"\$TMP\"' EXIT
+curl -fsSL \"https://codeload.github.com/$REPO/tar.gz/refs/heads/\$REF\" | tar xz -C \"\$TMP\" --strip-components=1
+rm -rf /opt/envelo.new && mkdir -p /opt/envelo.new
+cp -r \"\$TMP/server\" \"\$TMP/src\" \"\$TMP/index.html\" /opt/envelo.new/
+rm -rf /opt/envelo && mv /opt/envelo.new /opt/envelo
+systemctl restart envelo
+echo \"Envelo updated to \$REF.\"
+UPDATER
+chmod +x /usr/local/bin/envelo-update
+id envelo >/dev/null 2>&1 || useradd --system --home /var/lib/envelo --shell /usr/sbin/nologin envelo
+mkdir -p /var/lib/envelo && chown envelo:envelo /var/lib/envelo
+/usr/local/bin/envelo-update '$REF'"
 
-msg "Configuring nginx"
-pct exec "$CTID" -- bash -c 'cat > /etc/nginx/sites-available/envelo <<EOF
-server {
-    listen 80 default_server;
-    server_name _;
-    root /var/www/envelo;
-    index index.html;
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
-    location ~* \.(css|js)\$ {
-        expires 1h;
-    }
-}
+msg "Starting the Envelo service"
+pct exec "$CTID" -- bash -c "cat > /etc/systemd/system/envelo.service <<EOF
+[Unit]
+Description=Envelo budgeting server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/envelo/server/server.js
+Environment=PORT=$PORT
+Environment=HOST=0.0.0.0
+Environment=DATA_DIR=/var/lib/envelo
+Restart=on-failure
+User=envelo
+Group=envelo
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/envelo
+
+[Install]
+WantedBy=multi-user.target
 EOF
-rm -f /etc/nginx/sites-enabled/default
-ln -sf /etc/nginx/sites-available/envelo /etc/nginx/sites-enabled/envelo
-nginx -t >/dev/null
-systemctl enable --now nginx >/dev/null
-systemctl reload nginx'
+systemctl daemon-reload
+systemctl enable --now envelo"
 
 IP="$(pct exec "$CTID" -- hostname -I | awk '{print $1}')"
 msg "Envelo is installed in container $CTID."
-echo "    Open: http://${IP:-<container-ip>}/"
-echo "    Update later: re-run this script with CTID=$CTID after 'pct destroy $CTID', or run:"
-echo "    pct exec $CTID -- bash -c 'cd /tmp && curl -fsSL https://codeload.github.com/$REPO/tar.gz/refs/heads/$REF | tar xz && rm -rf /var/www/envelo && mv /tmp/Envelo-* /var/www/envelo && cd /var/www/envelo && rm -rf test design scripts .git .github package.json README.md'"
+if [[ "$PORT" == "80" ]]; then
+  echo "    Open: http://${IP:-<container-ip>}/"
+else
+  echo "    Open: http://${IP:-<container-ip>}:$PORT/"
+fi
+echo "    Update later:  pct exec $CTID -- envelo-update"
+echo "    Backups:       data is in /var/lib/envelo inside the container; include it in your Proxmox backups."
 echo
-warn "Budget data is stored in each browser (localStorage), not on this server. Export a backup regularly from the app footer."
+warn "Traffic is plain HTTP. Put it behind HTTPS (for example a reverse proxy with a certificate) before using it outside your home network, then set SECURE_COOKIES=1 in the service."

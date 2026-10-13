@@ -1,6 +1,5 @@
 (function () {
   const B = Budget;
-  const KEY = 'envelo.budget.v1';
 
   const $ = (sel) => document.querySelector(sel);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
@@ -13,27 +12,71 @@
   const thisMonth = () => todayISO().slice(0, 7);
   const money = (c) => B.formatMoney(c, budget.currency);
 
-  let budget = load();
+  let budget = B.create();
   let month = thisMonth();
+  let account = null;
 
-  // Storage. Every read and write is guarded: private windows and blocked
-  // storage must not break the app, they just mean nothing persists.
-  function load() {
-    try {
-      const raw = localStorage.getItem(KEY);
-      return raw ? B.fromJSON(JSON.parse(raw)) : B.create();
-    } catch (err) {
-      showError('Saved data could not be read, starting fresh. ' + err.message);
-      return B.create();
+  // API
+
+  async function api(method, url, body) {
+    const res = await fetch(url, {
+      method,
+      credentials: 'same-origin',
+      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!res.ok) {
+      const err = new Error(data.error || `Request failed (${res.status}).`);
+      err.status = res.status;
+      throw err;
     }
+    return data;
   }
 
-  function save() {
+  // Saving. Changes are sent to the server a moment after the last edit.
+  // If a save fails, the data stays on screen and we retry.
+
+  let saveTimer = null;
+  let inFlight = false;
+  let dirty = false;
+
+  function setSync(text, isError = false) {
+    const el = $('#sync');
+    el.textContent = text;
+    el.classList.toggle('sync-error', isError);
+  }
+
+  function scheduleSave() {
+    dirty = true;
+    setSync('Saving…');
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(flush, 300);
+  }
+
+  async function flush() {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    if (inFlight || !dirty || !account) return;
+    inFlight = true;
+    dirty = false;
     try {
-      localStorage.setItem(KEY, JSON.stringify(budget));
+      const { savedAt } = await api('PUT', '/api/budget', budget);
+      setSync(`Saved ${new Date(savedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`);
     } catch (err) {
-      showError('Could not save to this browser: ' + err.message);
+      if (err.status === 401) {
+        inFlight = false;
+        showAuth('Your session ended. Sign in again. Unsaved changes are kept on this screen until you do.');
+        return;
+      }
+      dirty = true;
+      setSync(`Not saved: ${err.message} Retrying…`, true);
+      saveTimer = setTimeout(flush, 5000);
+    } finally {
+      inFlight = false;
     }
+    if (dirty && !saveTimer) scheduleSave();
   }
 
   function showError(msg) {
@@ -47,7 +90,7 @@
     try {
       fn();
       showError('');
-      save();
+      scheduleSave();
       render();
       return true;
     } catch (err) {
@@ -62,6 +105,7 @@
     const [y, m] = month.split('-').map(Number);
     $('#month-label').textContent = new Date(y, m - 1, 1).toLocaleString(undefined, { month: 'long', year: 'numeric' });
     $('#currency').value = budget.currency;
+    $('#account').textContent = account ? account.email : '';
 
     const ready = $('#ready');
     ready.classList.toggle('warn', view.readyToAssign < 0);
@@ -127,6 +171,73 @@
     }).join('') : '<li class="tx-meta">No transactions this month.</li>';
   }
 
+  // Auth
+
+  function showAuth(message = '') {
+    account = null;
+    budget = B.create();
+    $('#app').hidden = true;
+    $('#auth').hidden = false;
+    $('#auth-message').textContent = message;
+    $('#auth-message').hidden = !message;
+    $('#auth-password').value = '';
+  }
+
+  function showApp() {
+    $('#auth').hidden = true;
+    $('#app').hidden = false;
+    render();
+  }
+
+  let authMode = 'login';
+  document.querySelectorAll('[data-auth-mode]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      authMode = btn.dataset.authMode;
+      document.querySelectorAll('[data-auth-mode]').forEach((b) => b.classList.toggle('active', b === btn));
+      $('#auth-submit').textContent = authMode === 'login' ? 'Sign in' : 'Create account';
+      $('#auth-hint').textContent = authMode === 'login'
+        ? ''
+        : 'Passwords must be at least 8 characters. Your budget is stored on this server, so you can use it from any device.';
+      $('#auth-password').autocomplete = authMode === 'login' ? 'current-password' : 'new-password';
+      $('#auth-message').hidden = true;
+    });
+  });
+
+  $('#auth-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    const btn = $('#auth-submit');
+    btn.disabled = true;
+    try {
+      const path = authMode === 'login' ? '/api/login' : '/api/register';
+      const { user } = await api('POST', path, { email: f.email.value, password: f.password.value });
+      account = user;
+      await loadBudget();
+      showApp();
+    } catch (err) {
+      $('#auth-message').textContent = err.message;
+      $('#auth-message').hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  async function loadBudget() {
+    const { budget: saved } = await api('GET', '/api/budget');
+    budget = saved ? B.fromJSON(saved) : B.create();
+    setSync('');
+  }
+
+  async function logout() {
+    await flush();
+    try {
+      await api('POST', '/api/logout');
+    } catch {
+      // Ignore: the local session is cleared either way.
+    }
+    showAuth();
+  }
+
   // Events
 
   document.addEventListener('click', (ev) => {
@@ -146,8 +257,9 @@
         break;
       case 'export': exportBackup(); break;
       case 'import': $('#import-file').click(); break;
+      case 'logout': logout(); break;
       case 'reset':
-        if (confirm('Erase every envelope and transaction in this browser? Export a backup first if unsure.')) {
+        if (confirm('Erase every envelope and transaction on your account? Export a backup first if unsure.')) {
           budget = B.create();
           attempt(() => {});
         }
@@ -172,6 +284,11 @@
       importBackup(t.files[0]);
       t.value = '';
     }
+  });
+
+  // Flush pending changes when the tab is hidden, e.g. before the browser closes it.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush();
   });
 
   document.querySelectorAll('input[name="kind"]').forEach((r) => r.addEventListener('change', syncKind));
@@ -240,15 +357,29 @@
     if (!file) return;
     try {
       const next = B.fromJSON(JSON.parse(await file.text()));
-      if (!confirm(`Replace current data with ${next.envelopes.length} envelopes and ${next.transactions.length} transactions?`)) return;
+      if (!confirm(`Replace your current data with ${next.envelopes.length} envelopes and ${next.transactions.length} transactions?`)) return;
       budget = next;
       showError('');
-      save();
+      scheduleSave();
       render();
     } catch (err) {
       showError('Import failed: ' + err.message);
     }
   }
 
-  render();
+  // Start: restore the session if there is one.
+  (async function boot() {
+    try {
+      const { user } = await api('GET', '/api/me');
+      account = user;
+      await loadBudget();
+      showApp();
+    } catch (err) {
+      if (err.status === 401) {
+        showAuth();
+      } else {
+        showAuth('Could not reach the Envelo server. Check the connection and reload.');
+      }
+    }
+  })();
 })();

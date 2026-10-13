@@ -7,6 +7,22 @@
   <link rel="stylesheet" href="src/styles.css">
 </head>
 <body>
+  <section id="auth" class="auth" hidden>
+    <form id="auth-form" class="auth-card" autocomplete="on">
+      <div class="brand auth-brand">Envelo</div>
+      <div class="auth-tabs" role="tablist">
+        <button type="button" class="active" data-auth-mode="login" role="tab">Sign in</button>
+        <button type="button" data-auth-mode="register" role="tab">Create account</button>
+      </div>
+      <p id="auth-message" class="auth-message" hidden></p>
+      <label>Email <input type="email" name="email" required autocomplete="email"></label>
+      <label>Password <input type="password" id="auth-password" name="password" required minlength="8" autocomplete="current-password"></label>
+      <p id="auth-hint" class="hint"></p>
+      <button type="submit" id="auth-submit" class="primary">Sign in</button>
+    </form>
+  </section>
+
+  <div id="app" hidden>
   <header class="topbar">
     <div class="brand">Envelo</div>
     <nav class="month-nav" aria-label="Month">
@@ -97,8 +113,17 @@
         </div>
         <button type="button" class="danger" data-action="reset">Erase all data</button>
       </section>
+
+      <section class="panel account">
+        <div class="account-line">
+          <span id="account" class="hint"></span>
+          <button type="button" data-action="logout">Sign out</button>
+        </div>
+        <p id="sync" class="hint sync" aria-live="polite"></p>
+      </section>
     </aside>
   </main>
+  </div>
 
   <script src="src/budget.js"></script>
   <script src="src/app.js"></script>
