@@ -124,6 +124,52 @@ EOF
 systemctl daemon-reload
 systemctl enable --now envelo"
 
+msg "Setting automatic console login and the address banner"
+PORT_SUFFIX=""
+[[ "$PORT" == "80" ]] || PORT_SUFFIX=":$PORT"
+pct exec "$CTID" -- mkdir -p /etc/systemd/system/console-getty.service.d /etc/systemd/system/container-getty@.service.d
+
+# Log in as root on the container console without a password prompt.
+# Anyone who can open the console already has root access to the Proxmox host,
+# so this adds no exposure beyond that.
+AUTOLOGIN_TMP="$(mktemp -d)"
+cat > "$AUTOLOGIN_TMP/console-getty.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear --keep-baud console 115200,38400,9600 $TERM
+EOF
+cat > "$AUTOLOGIN_TMP/container-getty.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear --keep-baud %I 115200,38400,9600 $TERM
+EOF
+pct push "$CTID" "$AUTOLOGIN_TMP/console-getty.conf" /etc/systemd/system/console-getty.service.d/autologin.conf
+pct push "$CTID" "$AUTOLOGIN_TMP/container-getty.conf" /etc/systemd/system/container-getty@.service.d/autologin.conf
+
+# Show the internal IP and app address on login (shell banner).
+BANNER_TMP="$(mktemp -d)"
+cat > "$BANNER_TMP/envelo-banner.sh" <<'EOF'
+# Installed by the Envelo installer. Shows the address of this container on login.
+if [ -t 1 ]; then
+  ENVELO_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  printf '\n  Envelo is running.\n  Internal IP: %s\n  Open in a browser: http://%s__PORT_SUFFIX__\n\n' "${ENVELO_IP:-unknown}" "${ENVELO_IP:-<container-ip>}"
+fi
+EOF
+sed -i "s|__PORT_SUFFIX__|$PORT_SUFFIX|" "$BANNER_TMP/envelo-banner.sh"
+pct push "$CTID" "$BANNER_TMP/envelo-banner.sh" /etc/profile.d/envelo-banner.sh
+
+# Show the same address on the console before login (the pre-login screen).
+cat > "$BANNER_TMP/issue" <<EOF
+Envelo container \n \l
+Envelo: http://\4{eth0}$PORT_SUFFIX
+
+EOF
+pct push "$CTID" "$BANNER_TMP/issue" /etc/issue
+rm -rf "$AUTOLOGIN_TMP" "$BANNER_TMP"
+
+pct exec "$CTID" -- systemctl daemon-reload
+pct exec "$CTID" -- systemctl restart console-getty.service >/dev/null 2>&1 || true
+
 IP="$(pct exec "$CTID" -- hostname -I | awk '{print $1}')"
 msg "Envelo is installed in container $CTID."
 if [[ "$PORT" == "80" ]]; then
