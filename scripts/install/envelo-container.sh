@@ -3,6 +3,7 @@
 # Installs Node.js, fetches Envelo, sets up the systemd service, the `update`
 # command, console autologin and the address banner.
 set -Eeuo pipefail
+export LC_ALL=C.UTF-8 LANG=C.UTF-8
 
 : "${REPO:?REPO is not set}"
 : "${REF:?REF is not set}"
@@ -62,7 +63,10 @@ curl -fsSL "${AUTH[@]}" "https://codeload.github.com/$REPO/tar.gz/refs/heads/$RE
 rm -rf /opt/envelo.new && mkdir -p /opt/envelo.new
 cp -r "$TMP/server" "$TMP/src" "$TMP/index.html" /opt/envelo.new/
 rm -rf /opt/envelo && mv /opt/envelo.new /opt/envelo
-systemctl restart envelo
+# On first install the service does not exist yet; the installer starts it.
+if systemctl cat envelo >/dev/null 2>&1; then
+  systemctl restart envelo
+fi
 echo "Envelo updated."
 UPDATER
 chmod +x /usr/local/bin/update
