@@ -131,7 +131,7 @@ cat > /etc/profile.d/envelo-banner.sh <<EOF
 # Installed by the Envelo installer. Shows the address of this container on login.
 if [ -t 1 ]; then
   ENVELO_IP="\$(hostname -I 2>/dev/null | awk '{print \$1}')"
-  printf '\n  Envelo is running.\n  Internal IP: %s\n  Open in a browser: http://%s$PORT_SUFFIX\n  Update Envelo:     update\n\n' "\${ENVELO_IP:-unknown}" "\${ENVELO_IP:-<container-ip>}"
+  printf '\n  Envelo is running.\n  Internal IP: %s\n  Open in a browser: http://%s$PORT_SUFFIX\n  Update Envelo:     /usr/local/bin/update\n\n' "\${ENVELO_IP:-unknown}" "\${ENVELO_IP:-<container-ip>}"
 fi
 EOF
 
