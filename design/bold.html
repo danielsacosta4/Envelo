@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Envelo bold</title>
+<style>
+  :root {
+    --ink: #0d0d0d; --paper: #f4efe6; --card: #fffdf8; --line: #0d0d0d;
+    --green: #1f8a5b; --red: #e5322d; --yellow: #ffd23f; --blue: #2d5bff; --pink: #ff8fb1;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #f4efe6; --paper: #0d0d0d; --card: #1b1b1a; --line: #f4efe6;
+      --green: #4fd69a; --red: #ff6b66; --yellow: #ffd23f; --blue: #7d9bff; --pink: #ff8fb1;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink);
+    font: 500 15px/1.4 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .app { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+
+  /* sidebar */
+  aside { border-right: 3px solid var(--line); padding: 20px 16px; background: var(--card); }
+  .logo { font-weight: 900; font-size: 26px; letter-spacing: -.04em; margin-bottom: 22px; }
+  .logo span { background: var(--yellow); padding: 0 6px; border: 3px solid var(--line); }
+  .sect { font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; margin: 18px 0 8px; }
+  .acct { display: flex; justify-content: space-between; padding: 9px 10px; border: 2px solid var(--line); margin-bottom: 8px; background: var(--paper); font-weight: 700; }
+  .acct b { font-variant-numeric: tabular-nums; }
+
+  /* main */
+  main { padding: 24px 28px 48px; }
+  .top { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: stretch; margin-bottom: 22px; }
+  .month { font-size: 40px; font-weight: 900; letter-spacing: -.04em; line-height: 1; }
+  .month small { display: block; font-size: 13px; letter-spacing: .12em; text-transform: uppercase; font-weight: 800; margin-bottom: 6px; }
+  .ready { background: var(--green); color: #fff; border: 3px solid var(--line); box-shadow: 6px 6px 0 var(--line); padding: 14px 22px; min-width: 300px; }
+  .ready .l { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; font-weight: 800; }
+  .ready .v { font-size: 42px; font-weight: 900; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+  .ready.warn { background: var(--red); }
+
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 22px; }
+  .stat { background: var(--card); border: 3px solid var(--line); box-shadow: 4px 4px 0 var(--line); padding: 12px 14px; }
+  .stat .l { font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+  .stat .v { font-size: 24px; font-weight: 900; font-variant-numeric: tabular-nums; }
+
+  /* table */
+  table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--card);
+    border: 3px solid var(--line); box-shadow: 6px 6px 0 var(--line); }
+  th { text-align: left; font-size: 11px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase;
+    padding: 12px 14px; border-bottom: 3px solid var(--line); background: var(--yellow); color: var(--ink); }
+  th.n, td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  td { padding: 11px 14px; border-bottom: 2px solid var(--line); }
+  tr:last-child td { border-bottom: none; }
+  tr.grp td { background: var(--ink); color: var(--paper); font-weight: 900; text-transform: uppercase; letter-spacing: .08em; font-size: 12px; padding: 8px 14px; }
+  td.name { font-weight: 800; }
+  .sub { display: block; font-weight: 500; font-size: 12px; opacity: .75; }
+  .pill { display: inline-block; font-weight: 900; font-size: 13px; padding: 4px 10px; border: 2px solid var(--line); min-width: 96px; text-align: right; font-variant-numeric: tabular-nums; }
+  .pill.ok { background: var(--green); color: #fff; }
+  .pill.zero { background: var(--card); }
+  .pill.neg { background: var(--red); color: #fff; }
+  .pill.goal { background: var(--blue); color: #fff; }
+  input.bud { width: 110px; text-align: right; font: inherit; font-weight: 800; padding: 6px 8px; border: 2px solid var(--line); background: var(--paper); color: var(--ink); }
+  .bar { height: 10px; border: 2px solid var(--line); background: var(--paper); margin-top: 6px; }
+  .bar > i { display: block; height: 100%; background: var(--green); }
+  .bar > i.over { background: var(--red); }
+
+  .cta { display: inline-block; font: inherit; font-weight: 900; padding: 10px 16px; border: 3px solid var(--line); background: var(--pink); color: var(--ink); box-shadow: 4px 4px 0 var(--line); cursor: pointer; }
+  .cta:active { transform: translate(3px,3px); box-shadow: 1px 1px 0 var(--line); }
+  .foot { display: flex; gap: 12px; margin-top: 18px; flex-wrap: wrap; }
+
+  @media (max-width: 860px) {
+    .app { grid-template-columns: 1fr; }
+    aside { border-right: none; border-bottom: 3px solid var(--line); }
+    .top { grid-template-columns: 1fr; }
+    .ready { min-width: 0; }
+    .stats { grid-template-columns: 1fr; }
+    main { padding: 18px 14px 40px; }
+    .month { font-size: 30px; }
+    table, thead, tbody, tr, td, th { display: block; }
+    th { display: none; }
+    tr { border-bottom: 3px solid var(--line); padding: 8px 0; }
+    td { border: none; padding: 4px 14px; }
+    td.n { text-align: left; }
+    td.n::before { content: attr(data-label); display: block; font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: .1em; opacity: .7; }
+    tr.grp td::before { content: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="logo"><span>ENVELO</span></div>
+    <div class="sect">Accounts</div>
+    <div class="acct">Checking <b>€ 2,310.50</b></div>
+    <div class="acct">Savings <b>€ 1,240.00</b></div>
+    <div class="acct">Cash <b>€ 64.00</b></div>
+    <div class="sect">Quick</div>
+    <div class="acct">Reconcile <b>→</b></div>
+    <div class="acct">Reports <b>→</b></div>
+  </aside>
+
+  <main>
+    <div class="top">
+      <div class="month"><small>Budget</small>October 2026</div>
+      <div class="ready">
+        <div class="l">Ready to assign</div>
+        <div class="v">€ 650.00</div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="l">Budgeted</div><div class="v">€ 1,950</div></div>
+      <div class="stat"><div class="l">Spent</div><div class="v">€ 1,480.50</div></div>
+      <div class="stat"><div class="l">Left in envelopes</div><div class="v">€ 1,459.50</div></div>
+    </div>
+
+    <table>
+      <thead>
+        <tr><th>Envelope</th><th class="n">Budgeted</th><th class="n">Spent</th><th class="n">Available</th></tr>
+      </thead>
+      <tbody>
+        <tr class="grp"><td colspan="4">Bills</td></tr>
+        <tr>
+          <td class="name">Rent<span class="sub">Due 1st · fully funded</span></td>
+          <td class="n" data-label="Budgeted"><input class="bud" value="1200.00" aria-label="Rent budgeted"></td>
+          <td class="n" data-label="Spent">€ 1,200.00</td>
+          <td class="n" data-label="Available"><span class="pill ok">€ 0.00</span></td>
+        </tr>
+        <tr>
+          <td class="name">Electricity<span class="sub">Due 15th</span></td>
+          <td class="n" data-label="Budgeted"><input class="bud" value="80.00" aria-label="Electricity budgeted"></td>
+          <td class="n" data-label="Spent">€ 0.00</td>
+          <td class="n" data-label="Available"><span class="pill ok">€ 80.00</span></td>
+        </tr>
+
+        <tr class="grp"><td colspan="4">Daily</td></tr>
+        <tr>
+          <td class="name">Groceries<span class="sub">€ 300 goal</span>
+            <div class="bar"><i style="width:53%"></i></div></td>
+          <td class="n" data-label="Budgeted"><input class="bud" value="300.00" aria-label="Groceries budgeted"></td>
+          <td class="n" data-label="Spent">€ 142.10</td>
+          <td class="n" data-label="Available"><span class="pill ok">€ 157.90</span></td>
+        </tr>
+        <tr>
+          <td class="name">Dining out<span class="sub">Over budget</span>
+            <div class="bar"><i class="over" style="width:100%"></i></div></td>
+          <td class="n" data-label="Budgeted"><input class="bud" value="120.00" aria-label="Dining out budgeted"></td>
+          <td class="n" data-label="Spent">€ 138.40</td>
+          <td class="n" data-label="Available"><span class="pill neg">− € 18.40</span></td>
+        </tr>
+
+        <tr class="grp"><td colspan="4">Savings</td></tr>
+        <tr>
+          <td class="name">Emergency fund<span class="sub">€ 2,000 by March · needs € 250/mo</span>
+            <div class="bar"><i style="width:62%"></i></div></td>
+          <td class="n" data-label="Budgeted"><input class="bud" value="250.00" aria-label="Emergency fund budgeted"></td>
+          <td class="n" data-label="Spent">€ 0.00</td>
+          <td class="n" data-label="Available"><span class="pill goal">€ 1,240.00</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="foot">
+      <button class="cta">+ Add transaction</button>
+      <button class="cta" style="background:var(--yellow)">Assign €650</button>
+    </div>
+  </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Envelo</title>
+  <link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+  <section id="auth" class="auth" hidden>
+    <form id="auth-form" class="auth-card" autocomplete="on">
+      <div class="brand auth-brand">Envelo</div>
+      <div class="auth-tabs" role="tablist">
+        <button type="button" class="active" data-auth-mode="login" role="tab">Sign in</button>
+        <button type="button" data-auth-mode="register" role="tab">Create account</button>
+      </div>
+      <p id="auth-message" class="auth-message" hidden></p>
+      <label>Email <input type="email" name="email" required autocomplete="email"></label>
+      <label>Password <input type="password" id="auth-password" name="password" required minlength="8" autocomplete="current-password"></label>
+      <p id="auth-hint" class="hint"></p>
+      <button type="submit" id="auth-submit" class="primary">Sign in</button>
+    </form>
+  </section>
+
+  <div id="app" hidden>
+  <header class="topbar">
+    <div class="brand">Envelo</div>
+    <nav class="month-nav" aria-label="Month">
+      <button type="button" data-action="prev-month" aria-label="Previous month">&lsaquo;</button>
+      <span id="month-label"></span>
+      <button type="button" data-action="next-month" aria-label="Next month">&rsaquo;</button>
+      <button type="button" class="ghost" data-action="this-month">Today</button>
+    </nav>
+    <div id="ready" class="ready"></div>
+  </header>
+
+  <div id="error" class="error" hidden></div>
+
+  <main class="layout">
+    <section class="panel envelopes">
+      <div class="panel-head">
+        <h2>Envelopes</h2>
+        <span class="hint">Assign money by typing into the Assigned column.</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Envelope</th>
+              <th class="num">Assigned</th>
+              <th class="num">Spent</th>
+              <th class="num">Available</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="envelope-rows"></tbody>
+        </table>
+      </div>
+      <p id="empty" class="empty" hidden>No envelopes yet. Add one on the right to get started.</p>
+    </section>
+
+    <aside class="side">
+      <section class="panel">
+        <h2>Add transaction</h2>
+        <form id="tx-form" class="stack" autocomplete="off">
+          <div class="segmented" role="radiogroup" aria-label="Type">
+            <label><input type="radio" name="kind" value="spend" checked><span>Spending</span></label>
+            <label><input type="radio" name="kind" value="income"><span>Income</span></label>
+          </div>
+          <label>Date <input type="date" name="date" required></label>
+          <label>Payee <input type="text" name="payee" maxlength="80" placeholder="Where it went or came from"></label>
+          <label>Amount <input type="text" name="amount" inputmode="decimal" required placeholder="0.00"></label>
+          <label id="tx-envelope-field">Envelope
+            <select name="envelopeId" id="tx-envelope"></select>
+          </label>
+          <label>Note <input type="text" name="note" maxlength="140" placeholder="Optional"></label>
+          <button type="submit" class="primary">Save transaction</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>New envelope</h2>
+        <form id="env-form" class="stack" autocomplete="off">
+          <label>Name <input type="text" name="name" maxlength="60" required placeholder="Groceries"></label>
+          <label>Group <input type="text" name="group" maxlength="40" list="group-list" placeholder="Daily"></label>
+          <datalist id="group-list"></datalist>
+          <label>Goal balance <span class="optional">(optional)</span>
+            <input type="text" name="goal" inputmode="decimal" placeholder="e.g. 500.00">
+          </label>
+          <button type="submit" class="primary">Add envelope</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Transactions</h2>
+          <span class="hint" id="tx-count"></span>
+        </div>
+        <ul id="tx-list" class="tx-list"></ul>
+      </section>
+
+      <section class="panel footer-actions">
+        <label>Currency
+          <select id="currency">
+            <option>USD</option><option>EUR</option><option>GBP</option><option>BRL</option>
+            <option>CAD</option><option>AUD</option><option>JPY</option><option>MXN</option>
+          </select>
+        </label>
+        <div class="row">
+          <button type="button" data-action="export">Export backup</button>
+          <button type="button" data-action="import">Import backup</button>
+          <input type="file" id="import-file" accept="application/json,.json" hidden>
+        </div>
+        <button type="button" class="danger" data-action="reset">Erase all data</button>
+      </section>
+
+      <section class="panel account">
+        <div class="account-line">
+          <span id="account" class="hint"></span>
+          <button type="button" data-action="logout">Sign out</button>
+        </div>
+        <p id="sync" class="hint sync" aria-live="polite"></p>
+      </section>
+    </aside>
+  </main>
+  </div>
+
+  <script src="src/budget.js"></script>
+  <script src="src/app.js"></script>
+</body>
+</html>

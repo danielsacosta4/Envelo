@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Envelo blend</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f4efe4; color: #161616; font: 500 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .page { max-width: 1040px; margin: 0 auto; background: #fbf8f1; min-height: 100vh; }
+  .hdr { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-wrap: wrap; padding: 30px 28px 22px; background: #ff5a3c; color: #fff; border-bottom: 4px double #161616; }
+  .mo { font-family: Georgia, "Times New Roman", serif; font-style: italic; font-size: 54px; line-height: 1; letter-spacing: -.01em; }
+  .mo small { display: block; font: 800 11px/1 system-ui, sans-serif; font-style: normal; letter-spacing: .16em; text-transform: uppercase; margin-bottom: 10px; opacity: .85; }
+  .rta { text-align: right; }
+  .rta .l { font: 900 11px/1 system-ui, sans-serif; letter-spacing: .16em; text-transform: uppercase; margin-bottom: 6px; }
+  .rta .v { font-family: Georgia, "Times New Roman", serif; font-style: italic; font-size: 76px; line-height: 1; letter-spacing: -.02em; font-variant-numeric: lining-nums; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 2px solid #161616; }
+  .stat { padding: 14px 28px; border-right: 1px solid #cfc6b2; }
+  .stat:last-child { border-right: none; }
+  .stat .l { font: 800 11px/1 system-ui, sans-serif; letter-spacing: .14em; text-transform: uppercase; opacity: .7; margin-bottom: 6px; }
+  .stat .v { font-family: Georgia, serif; font-size: 26px; font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font: 900 11px/1 system-ui, sans-serif; letter-spacing: .14em; text-transform: uppercase; padding: 14px 28px; border-bottom: 2px solid #161616; }
+  th.n, td.n { text-align: right; }
+  td { padding: 14px 28px; border-bottom: 1px solid #d8cfbb; font-family: Georgia, serif; font-size: 18px; }
+  td.nm { font-family: system-ui, sans-serif; font-weight: 800; font-size: 16px; }
+  .sub { display: block; font: 500 12px/1.4 system-ui, sans-serif; opacity: .72; margin-top: 2px; }
+  .grp td { font: 900 12px/1 system-ui, sans-serif; letter-spacing: .12em; text-transform: uppercase; padding: 10px 28px; border-bottom: none; }
+  .g-bills td { background: #ffd6cc; }
+  .g-daily td { background: #cdeee0; }
+  .g-save td { background: #cfe0ff; }
+  .g-bills td, .g-daily td, .g-save td { border-bottom: 1px solid #161616; }
+  .bar { height: 6px; margin-top: 8px; background: rgba(0,0,0,.12); }
+  .bar > i { display: block; height: 100%; background: #161616; }
+  .neg { color: #b3261e; font-style: italic; }
+  .foot { display: flex; gap: 12px; padding: 22px 28px 40px; flex-wrap: wrap; }
+  .btn { font: 900 14px/1 system-ui, sans-serif; padding: 12px 18px; border: 2px solid #161616; background: #161616; color: #fbf8f1; cursor: pointer; }
+  .btn.ghost { background: transparent; color: #161616; }
+  @media (max-width: 680px) {
+    .mo { font-size: 36px; }
+    .rta .v { font-size: 52px; }
+    .stats { grid-template-columns: 1fr; }
+    .stat { border-right: none; border-bottom: 1px solid #cfc6b2; padding: 12px 18px; }
+    th { display: none; }
+    td, .grp td { padding: 8px 18px; }
+    td { display: block; border-bottom: none; }
+    td.n { text-align: left; }
+    td.n::before { content: attr(data-label); display: block; font: 800 11px/1.6 system-ui, sans-serif; letter-spacing: .12em; text-transform: uppercase; opacity: .7; }
+    tr { border-bottom: 1px solid #d8cfbb; display: block; padding-bottom: 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="hdr">
+    <div class="mo"><small>Budget</small>October 2026</div>
+    <div class="rta"><div class="l">Ready to assign</div><div class="v">€650</div></div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="l">Budgeted</div><div class="v">€1,950</div></div>
+    <div class="stat"><div class="l">Spent</div><div class="v">€1,480.50</div></div>
+    <div class="stat"><div class="l">Left in envelopes</div><div class="v">€1,459.50</div></div>
+  </div>
+
+  <table>
+    <thead><tr><th>Envelope</th><th class="n">Budgeted</th><th class="n">Spent</th><th class="n">Available</th></tr></thead>
+    <tbody>
+      <tr class="grp g-bills"><td colspan="4">Bills</td></tr>
+      <tr class="g-bills"><td class="nm">Rent</td><td class="n" data-label="Budgeted">1,200.00</td><td class="n" data-label="Spent">1,200.00</td><td class="n" data-label="Available">0.00</td></tr>
+      <tr class="g-bills"><td class="nm">Electricity<span class="sub">Due 15th</span></td><td class="n" data-label="Budgeted">80.00</td><td class="n" data-label="Spent">0.00</td><td class="n" data-label="Available">80.00</td></tr>
+
+      <tr class="grp g-daily"><td colspan="4">Daily</td></tr>
+      <tr class="g-daily"><td class="nm">Groceries<span class="sub">€300 goal</span><div class="bar"><i style="width:53%"></i></div></td><td class="n" data-label="Budgeted">300.00</td><td class="n" data-label="Spent">142.10</td><td class="n" data-label="Available">157.90</td></tr>
+      <tr class="g-daily"><td class="nm">Dining out<span class="sub">Over by €18.40</span></td><td class="n" data-label="Budgeted">120.00</td><td class="n" data-label="Spent">138.40</td><td class="n neg" data-label="Available">−18.40</td></tr>
+
+      <tr class="grp g-save"><td colspan="4">Savings</td></tr>
+      <tr class="g-save"><td class="nm">Emergency fund<span class="sub">€2,000 by March · needs €250/mo</span><div class="bar"><i style="width:62%"></i></div></td><td class="n" data-label="Budgeted">250.00</td><td class="n" data-label="Spent">0.00</td><td class="n" data-label="Available">1,240.00</td></tr>
+    </tbody>
+  </table>
+
+  <div class="foot">
+    <button class="btn">+ Transaction</button>
+    <button class="btn ghost">Assign €650</button>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "name": "envelo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Envelope budgeting that runs in the browser",
+  "scripts": {
+    "start": "node server/server.js",
+    "test": "node --test test/budget.test.js test/server.test.js"
+  },
+  "license": "UNLICENSED"
+}
