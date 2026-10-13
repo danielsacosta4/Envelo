@@ -134,7 +134,17 @@ EOF
   systemctl restart console-getty.service >/dev/null 2>&1 || true
 }
 
+install_packages() {
+  # sqlite3 reads Actual Budget exports on Node versions without node:sqlite.
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    { apt-get update -qq && apt-get install -y -qq sqlite3 >/dev/null; } \
+      || echo "Could not install sqlite3; importing Actual .zip files will not work until it is installed."
+  fi
+}
+
 if [[ "$MODE" == "--refresh" ]]; then
+  install_packages
   install_update_command
   install_service
   install_console
@@ -155,7 +165,7 @@ msg_ok "Network is up"
 msg_info "Installing Node.js and tools"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq nodejs curl ca-certificates tar >/dev/null
+apt-get install -y -qq nodejs curl ca-certificates tar sqlite3 >/dev/null
 msg_ok "Node.js $(node --version) installed"
 
 msg_info "Creating the envelo user and config"

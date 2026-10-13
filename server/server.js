@@ -9,10 +9,12 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
+const { importActualZip } = require('./actual-import.js');
 
 const COOKIE = 'envelo_session';
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
+const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 10;
 const BACKUPS_KEPT = 14;
@@ -147,6 +149,24 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
     });
   }
 
+  function readRaw(req, limit) {
+    return new Promise((resolve, reject) => {
+      const chunks = [];
+      let size = 0;
+      req.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > limit) {
+          reject(new HttpError(413, 'The file is too large.'));
+          req.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on('end', () => resolve(Buffer.concat(chunks)));
+      req.on('error', reject);
+    });
+  }
+
   function currentUser(req) {
     const token = parseCookies(req.headers.cookie)[COOKIE];
     if (!token) return null;
@@ -272,6 +292,24 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
       db.budgets[user.email] = { budget, savedAt, revision };
       persist();
       return sendJson(res, 200, { savedAt, revision });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/import/actual') {
+      const user = requireUser(req);
+      // A zip content type also keeps plain cross-site forms from posting here.
+      if (!/application\/(zip|x-zip-compressed|octet-stream)/.test(String(req.headers['content-type'] || ''))) {
+        throw new HttpError(415, 'Send the .zip file exported from Actual.');
+      }
+      const zip = await readRaw(req, MAX_IMPORT_BYTES);
+      const current = db.budgets[user.email];
+      let result;
+      try {
+        result = importActualZip(zip, { currency: current && current.budget ? current.budget.currency : 'EUR' });
+      } catch (err) {
+        throw new HttpError(400, err.message);
+      }
+      // Not saved here: the app shows a summary and saves after the user confirms.
+      return sendJson(res, 200, result);
     }
 
     throw new HttpError(404, 'Not found.');

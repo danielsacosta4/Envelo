@@ -255,3 +255,34 @@ async function fetchWith(base, call, revision, body) {
   const res = await call('PUT_IF', '/api/budget', body, revision);
   return res;
 }
+
+test('the Actual import endpoint converts a zip without saving it', { skip: (() => { try { require('node:child_process').execFileSync('python3', ['--version']); return false; } catch { return true; } })() }, async () => {
+  const s = await start();
+  try {
+    const file = path.join(s.dataDir, 'actual.zip');
+    require('node:child_process').execFileSync('python3', [path.join(__dirname, 'fixtures', 'make-actual-zip.py'), file]);
+    const zip = fs.readFileSync(file);
+    const anon = await fetch(s.base + '/api/import/actual', { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: zip });
+    assert.equal(anon.status, 401);
+
+    const call = client(s.base);
+    await call('POST', '/api/register', { email: 'z@example.com', password: 'longenough1' });
+    const cookie = (await fetch(s.base + '/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'z@example.com', password: 'longenough1' }),
+    })).headers.get('set-cookie').split(';')[0];
+    const wrongType = await fetch(s.base + '/api/import/actual', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'text/plain' }, body: zip });
+    assert.equal(wrongType.status, 415);
+    const ok = await fetch(s.base + '/api/import/actual', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/zip' }, body: zip });
+    assert.equal(ok.status, 200);
+    const body = await ok.json();
+    assert.equal(body.summary.transactions, 9);
+    assert.equal(body.budget.accounts.length, 2);
+    // Nothing saved until the app confirms.
+    assert.equal((await call('GET', '/api/budget')).body.budget, null);
+    const bad = await fetch(s.base + '/api/import/actual', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/zip' }, body: Buffer.from('nope') });
+    assert.equal(bad.status, 400);
+  } finally {
+    await s.close();
+  }
+});

@@ -732,6 +732,10 @@
 
   async function importActual(file) {
     if (!file) return;
+    if (/\.zip$/i.test(file.name) || /zip/.test(file.type)) {
+      await importActualZip(file);
+      return;
+    }
     try {
       const text = await file.text();
       let result;
@@ -746,6 +750,43 @@
     } catch (err) {
       showError('Import failed: ' + err.message);
     }
+  }
+
+  // Full Actual export: the server reads the zip and returns a budget, which
+  // replaces the current one only after the user confirms.
+  async function importActualZip(file) {
+    setSync('Reading the Actual export…');
+    let res;
+    try {
+      const r = await fetch('/api/import/actual', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/zip' },
+        body: file,
+      });
+      res = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(res.error || `Import failed (${r.status}).`);
+    } catch (err) {
+      setSync('');
+      showError('Import failed: ' + err.message);
+      return;
+    }
+    setSync('');
+    const s = res.summary;
+    const lines = [
+      `Import "${s.name || 'Actual budget'}"?`,
+      '',
+      `${s.accounts} accounts, ${s.envelopes} envelopes, ${s.transactions} transactions (${s.transfers} transfers), budgeted amounts for ${s.months} months.`,
+    ];
+    if (s.offBudgetSkipped) lines.push(`${s.offBudgetSkipped} transactions in off-budget accounts are left out.`);
+    if (s.uncategorized) lines.push(`${s.uncategorized} uncategorized transactions go to an "Uncategorized" envelope.`);
+    if (s.negativeBudgetsSkipped) lines.push(`${s.negativeBudgetsSkipped} negative budgeted amounts are left out.`);
+    lines.push('', 'This REPLACES everything currently in Envelo. Export a backup first if unsure.');
+    if (!confirm(lines.join('\n'))) return;
+    budget = B.fromJSON(res.budget);
+    showError('');
+    scheduleSave();
+    render();
   }
 
   // Start: restore the session if there is one.

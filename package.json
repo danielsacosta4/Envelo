@@ -5,7 +5,7 @@
   "description": "Self-hosted envelope budgeting with accounts, targets and reports",
   "scripts": {
     "start": "node server/server.js",
-    "test": "node --test test/budget.test.js test/server.test.js"
+    "test": "node --test test/budget.test.js test/server.test.js test/actual-import.test.js"
   },
   "license": "UNLICENSED"
 }

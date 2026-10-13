@@ -138,8 +138,9 @@
           <button type="button" data-action="import">Import backup</button>
           <input type="file" id="import-file" accept="application/json,.json" hidden>
         </div>
-        <button type="button" data-action="import-actual">Import from Actual Budget (CSV)</button>
-        <input type="file" id="import-actual-file" accept=".csv,text/csv" hidden>
+        <button type="button" data-action="import-actual">Import from Actual Budget</button>
+        <input type="file" id="import-actual-file" accept=".zip,application/zip,.csv,text/csv" hidden>
+        <p class="hint import-hint">Use Actual's <strong>Settings → Export data</strong> (.zip) to bring over everything, including budgeted amounts. A transactions .csv adds transactions to your current budget.</p>
         <button type="button" class="danger" data-action="reset">Erase all data</button>
       </section>
 

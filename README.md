@@ -18,8 +18,10 @@ down. Unspent money rolls over automatically.
   how much is missing and offers a one-click "Fund goal".
 - **Transparent math.** Available = everything assigned + all activity, so you
   can check any number by hand. The core logic lives in `src/budget.js`.
-- **Portable.** Export a JSON backup and import it anywhere, or import
-  transactions exported from Actual Budget (CSV).
+- **Portable.** Export a JSON backup and import it anywhere.
+- **Move from Actual Budget.** Import Actual's full export (Settings → Export
+  data, a .zip): accounts, category groups, transactions (splits and transfers
+  included) and budgeted amounts per month. A transactions .csv also works.
 
 ## Features
 
