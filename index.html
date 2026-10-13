@@ -25,6 +25,11 @@
   <div id="app" hidden>
   <header class="topbar">
     <div class="brand">Envelo</div>
+    <nav class="views" aria-label="Sections">
+      <button type="button" class="active" data-view="budget">Budget</button>
+      <button type="button" data-view="accounts">Accounts</button>
+      <button type="button" data-view="reports">Reports</button>
+    </nav>
     <nav class="month-nav" aria-label="Month">
       <button type="button" data-action="prev-month" aria-label="Previous month">&lsaquo;</button>
       <span id="month-label"></span>
@@ -36,7 +41,7 @@
 
   <div id="error" class="error" hidden></div>
 
-  <main class="layout">
+  <main class="layout" id="view-budget">
     <section class="panel envelopes">
       <div class="panel-head">
         <h2>Envelopes</h2>
@@ -61,11 +66,12 @@
 
     <aside class="side">
       <section class="panel">
-        <h2>Add transaction</h2>
+        <h2 id="tx-heading">Add transaction</h2>
         <form id="tx-form" class="stack" autocomplete="off">
           <div class="segmented" role="radiogroup" aria-label="Type">
             <label><input type="radio" name="kind" value="spend" checked><span>Spending</span></label>
             <label><input type="radio" name="kind" value="income"><span>Income</span></label>
+            <label><input type="radio" name="kind" value="transfer"><span>Transfer</span></label>
           </div>
           <label>Date <input type="date" name="date" required></label>
           <label>Payee <input type="text" name="payee" maxlength="80" placeholder="Where it went or came from"></label>
@@ -73,8 +79,22 @@
           <label id="tx-envelope-field">Envelope
             <select name="envelopeId" id="tx-envelope"></select>
           </label>
+          <label><span id="tx-account-label">Account</span> <select name="accountId" id="tx-account"></select></label>
+          <label id="tx-to-field" hidden>To account <select name="toAccountId" id="tx-to"></select></label>
           <label>Note <input type="text" name="note" maxlength="140" placeholder="Optional"></label>
-          <button type="submit" class="primary">Save transaction</button>
+          <label id="tx-repeat-field">Repeat
+            <select name="repeat">
+              <option value="">Does not repeat</option>
+              <option value="weekly">Every week</option>
+              <option value="biweekly">Every 2 weeks</option>
+              <option value="monthly">Every month</option>
+              <option value="yearly">Every year</option>
+            </select>
+          </label>
+          <div class="row">
+            <button type="submit" class="primary grow" id="tx-submit">Save transaction</button>
+            <button type="button" id="tx-cancel" data-action="cancel-edit" hidden>Cancel</button>
+          </div>
         </form>
       </section>
 
@@ -132,12 +152,57 @@
       </section>
     </aside>
   </main>
+
+  <section id="view-accounts" class="layout" hidden>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Accounts</h2>
+        <span class="hint" id="accounts-total"></span>
+      </div>
+      <div id="accounts-list" class="accounts-list"></div>
+      <p class="hint accounts-help">Reconcile when you check your bank: enter what the bank shows and Envelo adds an adjustment for any difference.</p>
+    </section>
+    <aside class="side">
+      <section class="panel">
+        <h2>New account</h2>
+        <form id="account-form" class="stack" autocomplete="off">
+          <label>Name <input type="text" name="acctName" maxlength="60" required placeholder="Checking"></label>
+          <label>Current balance <input type="text" name="balance" inputmode="decimal" placeholder="0.00"></label>
+          <button type="submit" class="primary">Add account</button>
+        </form>
+      </section>
+      <section class="panel">
+        <h2>Recurring transactions</h2>
+        <ul id="recurring-list" class="tx-list"></ul>
+        <p class="hint">Add one from the Budget page with the Repeat option.</p>
+      </section>
+    </aside>
+  </section>
+
+  <section id="view-reports" class="layout single" hidden>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Spending by envelope</h2>
+        <label class="inline-label">Last
+          <select id="report-months">
+            <option value="3">3 months</option>
+            <option value="6" selected>6 months</option>
+            <option value="12">12 months</option>
+          </select>
+        </label>
+      </div>
+      <div class="table-wrap" id="report"></div>
+    </section>
+  </section>
   </div>
 
   <dialog id="target-dialog" class="target-dialog">
     <form id="target-form" class="stack" autocomplete="off">
-      <h2 id="target-title">Target</h2>
+      <h2 id="target-title">Envelope</h2>
       <p id="target-error" class="auth-message" hidden></p>
+      <label>Name <input type="text" name="envName" maxlength="60" required></label>
+      <label>Group <input type="text" name="envGroup" maxlength="40" list="group-list"></label>
+      <h3 class="sub-h">Target</h3>
       <label>Type
         <select name="type">
           <option value="">No target</option>
@@ -172,8 +237,29 @@
         <input type="month" name="next">
       </label>
       <div class="row">
-        <button type="submit" class="primary">Save target</button>
+        <button type="submit" class="primary">Save</button>
         <button type="button" data-action="close-target">Cancel</button>
+      </div>
+      <details class="danger-zone">
+        <summary>Delete this envelope</summary>
+        <label id="move-to-field">Move its transactions to
+          <select name="moveTo"></select>
+        </label>
+        <button type="button" class="danger" data-action="delete-envelope">Delete envelope</button>
+      </details>
+    </form>
+  </dialog>
+
+  <dialog id="reconcile-dialog" class="target-dialog">
+    <form id="reconcile-form" class="stack" autocomplete="off">
+      <h2 id="reconcile-title">Reconcile</h2>
+      <p class="hint" id="reconcile-info"></p>
+      <p id="reconcile-error" class="auth-message" hidden></p>
+      <label>Balance your bank shows <input type="text" name="bank" inputmode="decimal" required></label>
+      <label>As of <input type="date" name="date" required></label>
+      <div class="row">
+        <button type="submit" class="primary">Reconcile</button>
+        <button type="button" data-action="close-reconcile">Cancel</button>
       </div>
     </form>
   </dialog>

@@ -28,6 +28,8 @@
   let month = thisMonth();
   let account = null;
   let revision = 0; // server revision this copy is based on
+  let currentView = 'budget';
+  let editingTx = null;
 
   // API
 
@@ -168,6 +170,72 @@
 
     renderEnvelopeOptions();
     renderTransactions();
+    renderAccounts();
+    renderRecurring();
+    renderReport();
+    for (const v of ['budget', 'accounts', 'reports']) $(`#view-${v}`).hidden = v !== currentView;
+    document.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === currentView));
+  }
+
+  const accountName = (id) => (budget.accounts.find((a) => a.id === id) || {}).name || 'Unknown account';
+
+  function renderAccounts() {
+    const list = budget.accounts;
+    const total = list.reduce((sum, a) => sum + B.accountBalance(budget, a.id), 0);
+    $('#accounts-total').textContent = list.length ? `Total ${money(total)}` : '';
+    $('#accounts-list').innerHTML = list.length ? list.map((a) => {
+      const bal = B.accountBalance(budget, a.id);
+      const rec = a.reconciledAt ? `Reconciled ${esc(a.reconciledAt)} at ${esc(money(a.reconciledBalance))}` : 'Never reconciled';
+      return `<div class="account-row">
+        <div><div class="env-name">${esc(a.name)}</div><div class="goal">${rec}</div></div>
+        <div class="acct-bal ${bal < 0 ? 'neg' : ''}">${esc(money(bal))}</div>
+        <div class="row acct-actions">
+          <button type="button" data-action="reconcile" data-id="${a.id}">Reconcile</button>
+          <button type="button" data-action="rename-account" data-id="${a.id}">Rename</button>
+          <button type="button" class="danger" data-action="delete-account" data-id="${a.id}">Delete</button>
+        </div>
+      </div>`;
+    }).join('') : '<p class="empty">No accounts yet. Add the bank accounts and cash you budget with.</p>';
+  }
+
+  const FREQ_LABEL = { weekly: 'week', monthly: 'month', yearly: 'year' };
+  function renderRecurring() {
+    const rules = budget.recurring || [];
+    const names = Object.fromEntries(budget.envelopes.map((e) => [e.id, e.name]));
+    $('#recurring-list').innerHTML = rules.length ? rules.map((r) => {
+      const every = r.every === 1 ? `Every ${FREQ_LABEL[r.freq]}` : `Every ${r.every} ${FREQ_LABEL[r.freq]}s`;
+      const where = r.kind === 'spend' ? names[r.envelopeId] || 'Deleted envelope' : 'Income';
+      return `<li>
+        <div class="tx-meta">${esc(every)} · next ${esc(r.next)} · ${esc(where)}</div>
+        <div><strong>${esc(r.payee || (r.kind === 'spend' ? 'Spending' : 'Income'))}</strong></div>
+        <div class="tx-amt ${r.kind === 'income' ? 'in' : ''}">${r.kind === 'income' ? '+' : '-'}${esc(money(r.amount))}</div>
+        <button type="button" class="icon tx-del" data-action="remove-recurring" data-id="${r.id}" aria-label="Stop repeating">&times;</button>
+      </li>`;
+    }).join('') : '<li class="tx-meta">Nothing repeats yet.</li>';
+  }
+
+  function renderReport() {
+    const count = Number($('#report-months').value) || 6;
+    const r = B.report(budget, month, count);
+    const head = r.months.map((m) => `<th class="num month-col">${esc(fmtMonth(m))}</th>`).join('');
+    const cells = (arr) => arr.map((v) => `<td class="num month-col">${v ? esc(money(v)) : '—'}</td>`).join('');
+    const rows = r.rows.map((row) => `<tr>
+      <td><div class="env-name">${esc(row.name)}</div><div class="goal">${esc(row.group)}</div></td>
+      ${cells(row.perMonth)}
+      <td class="num"><strong>${esc(money(row.total))}</strong></td>
+      <td class="num">${esc(money(row.average))}</td>
+    </tr>`).join('');
+    const net = r.income.map((v, i) => v - r.spending[i]);
+    const sum = (arr) => arr.reduce((a, v) => a + v, 0);
+    $('#report').innerHTML = r.rows.length || sum(r.income) ? `<table class="report-table">
+      <thead><tr><th>Envelope</th>${head}<th class="num">Total</th><th class="num">Average</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot>
+        <tr><td>Spending</td>${cells(r.spending)}<td class="num"><strong>${esc(money(sum(r.spending)))}</strong></td><td class="num">${esc(money(Math.round(sum(r.spending) / count)))}</td></tr>
+        <tr><td>Income</td>${cells(r.income)}<td class="num"><strong>${esc(money(sum(r.income)))}</strong></td><td class="num">${esc(money(Math.round(sum(r.income) / count)))}</td></tr>
+        <tr><td>Net</td>${net.map((v) => `<td class="num month-col ${v < 0 ? 'neg' : ''}">${esc(money(v))}</td>`).join('')}<td class="num ${sum(net) < 0 ? 'neg' : ''}"><strong>${esc(money(sum(net)))}</strong></td><td class="num">${esc(money(Math.round(sum(net) / count)))}</td></tr>
+      </tfoot>
+    </table>` : '<p class="empty">No transactions in these months yet.</p>';
   }
 
   function renderEnvelopeOptions() {
@@ -177,6 +245,16 @@
       ? budget.envelopes.map((e) => `<option value="${e.id}">${esc(e.group)} · ${esc(e.name)}</option>`).join('')
       : '<option value="">Add an envelope first</option>';
     if (budget.envelopes.some((e) => e.id === current)) sel.value = current;
+
+    const acctOptions = budget.accounts.length
+      ? budget.accounts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')
+      : '<option value="">Main account (created automatically)</option>';
+    for (const id of ['#tx-account', '#tx-to']) {
+      const el = $(id);
+      const keep = el.value;
+      el.innerHTML = acctOptions;
+      if (budget.accounts.some((a) => a.id === keep)) el.value = keep;
+    }
 
     const groups = [...new Set(budget.envelopes.map((e) => e.group))];
     $('#group-list').innerHTML = groups.map((g) => `<option value="${esc(g)}">`).join('');
@@ -189,11 +267,13 @@
     const names = Object.fromEntries(budget.envelopes.map((e) => [e.id, e.name]));
     $('#tx-count').textContent = txs.length ? `${txs.length} this month` : '';
     $('#tx-list').innerHTML = txs.length ? txs.map((t) => {
-      const where = t.envelopeId ? names[t.envelopeId] || 'Deleted envelope' : 'Income';
+      const where = t.transferId ? 'Transfer'
+        : t.envelopeId ? names[t.envelopeId] || 'Deleted envelope' : 'Income';
       const label = t.payee || (t.envelopeId ? 'Spending' : 'Income');
+      const acct = budget.accounts.length > 1 ? ` · ${esc(accountName(t.accountId))}` : '';
       return `<li>
-        <div class="tx-meta">${esc(t.date)} · ${esc(where)}${t.note ? ' · ' + esc(t.note) : ''}</div>
-        <div><strong>${esc(label)}</strong></div>
+        <div class="tx-meta">${esc(t.date)} · ${esc(where)}${acct}${t.note ? ' · ' + esc(t.note) : ''}${t.reconciled ? ' · ✓' : ''}</div>
+        <div><button type="button" class="env-link" data-action="edit-tx" data-id="${t.id}">${esc(label)}</button></div>
         <div class="tx-amt ${t.amount > 0 ? 'in' : ''}">${t.amount > 0 ? '+' : ''}${esc(money(t.amount))}</div>
         <button type="button" class="icon tx-del" data-action="delete-tx" data-id="${t.id}" aria-label="Delete transaction">&times;</button>
       </li>`;
@@ -256,6 +336,8 @@
     budget = res.budget ? B.fromJSON(res.budget) : B.create();
     revision = res.revision || 0;
     setSync('');
+    // Create any recurring transactions that came due since the last visit.
+    if (B.applyRecurring(budget, todayISO()) > 0) scheduleSave();
   }
 
   async function logout() {
@@ -292,6 +374,39 @@
         break;
       }
       case 'edit-target': openTarget(btn.dataset.id); break;
+      case 'edit-tx': editTransaction(btn.dataset.id); break;
+      case 'cancel-edit': stopEditing(); break;
+      case 'delete-envelope': {
+        const f = $('#target-form');
+        const env = budget.envelopes.find((e) => e.id === editingTarget);
+        if (!env || !confirm(`Delete the envelope "${env.name}"? Money assigned to it goes back to Ready to Assign.`)) break;
+        try {
+          B.deleteEnvelope(budget, editingTarget, f.moveTo.value || null);
+        } catch (err) {
+          $('#target-error').textContent = err.message;
+          $('#target-error').hidden = false;
+          break;
+        }
+        $('#target-dialog').close();
+        attempt(() => {});
+        break;
+      }
+      case 'remove-recurring':
+        if (confirm('Stop this recurring transaction? Transactions already created stay.')) {
+          attempt(() => B.removeRecurring(budget, btn.dataset.id));
+        }
+        break;
+      case 'rename-account': {
+        const acct = budget.accounts.find((a) => a.id === btn.dataset.id);
+        const name = acct && prompt('New name for this account', acct.name);
+        if (name) attempt(() => B.updateAccount(budget, acct.id, { name }));
+        break;
+      }
+      case 'delete-account':
+        if (confirm('Delete this account?')) attempt(() => B.deleteAccount(budget, btn.dataset.id));
+        break;
+      case 'reconcile': openReconcile(btn.dataset.id); break;
+      case 'close-reconcile': $('#reconcile-dialog').close(); break;
       case 'close-target': $('#target-dialog').close(); break;
       case 'export': exportBackup(); break;
       case 'import': $('#import-file').click(); break;
@@ -304,6 +419,56 @@
         }
         break;
     }
+  });
+
+  document.querySelectorAll('[data-view]').forEach((btn) => btn.addEventListener('click', () => {
+    currentView = btn.dataset.view;
+    render();
+  }));
+
+  let reconcilingAccount = null;
+  function openReconcile(id) {
+    const acct = budget.accounts.find((a) => a.id === id);
+    if (!acct) return;
+    reconcilingAccount = id;
+    const f = $('#reconcile-form');
+    $('#reconcile-title').textContent = `Reconcile ${acct.name}`;
+    $('#reconcile-info').textContent = `Envelo shows ${money(B.accountBalance(budget, id))} in this account.`;
+    $('#reconcile-error').hidden = true;
+    f.bank.value = B.toInput(B.accountBalance(budget, id));
+    f.date.value = todayISO();
+    $('#reconcile-dialog').showModal();
+  }
+
+  $('#reconcile-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    const bank = B.parseMoney(f.bank.value);
+    let diff = 0;
+    try {
+      if (Number.isNaN(bank)) throw new Error('Enter the balance your bank shows.');
+      diff = B.reconcileAccount(budget, reconcilingAccount, bank, f.date.value);
+    } catch (err) {
+      $('#reconcile-error').textContent = err.message;
+      $('#reconcile-error').hidden = false;
+      return;
+    }
+    $('#reconcile-dialog').close();
+    attempt(() => {});
+    alert(diff === 0
+      ? 'Reconciled. Envelo matches your bank.'
+      : `Reconciled. Envelo added an adjustment of ${money(diff)} to match your bank. It counts toward Ready to Assign.`);
+  });
+
+  $('#account-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    const bal = f.balance.value.trim() ? B.parseMoney(f.balance.value) : 0;
+    const ok = attempt(() => {
+      if (Number.isNaN(bal)) throw new Error('Balance must be an amount like 1200.00.');
+      B.addAccount(budget, { name: f.acctName.value, balance: bal, date: todayISO() });
+    });
+    if (ok) f.reset();
   });
 
   document.addEventListener('change', (ev) => {
@@ -319,6 +484,8 @@
     } else if (t.id === 'currency') {
       budget.currency = t.value;
       attempt(() => {});
+    } else if (t.id === 'report-months') {
+      renderReport();
     } else if (t.id === 'theme') {
       applyTheme(t.value);
     } else if (t.id === 'import-actual-file') {
@@ -352,9 +519,51 @@
 
   document.querySelectorAll('input[name="kind"]').forEach((r) => r.addEventListener('change', syncKind));
   function syncKind() {
-    const spend = document.querySelector('input[name="kind"]:checked').value === 'spend';
-    $('#tx-envelope-field').hidden = !spend;
-    $('#tx-envelope').required = spend;
+    const kind = document.querySelector('input[name="kind"]:checked').value;
+    $('#tx-envelope-field').hidden = kind !== 'spend';
+    $('#tx-envelope').required = kind === 'spend';
+    $('#tx-to-field').hidden = kind !== 'transfer';
+    $('#tx-account-label').textContent = kind === 'transfer' ? 'From account' : 'Account';
+    $('#tx-repeat-field').hidden = kind === 'transfer' || !!editingTx;
+  }
+
+  function editTransaction(id) {
+    const t = budget.transactions.find((x) => x.id === id);
+    if (!t) return;
+    // For a transfer, always edit from the sending side.
+    const main = t.transferId && t.amount > 0
+      ? budget.transactions.find((x) => x.transferId === t.transferId && x.amount < 0) || t
+      : t;
+    editingTx = main.id;
+    const f = $('#tx-form');
+    const kind = B.transactionKind(main);
+    f.querySelector(`input[name="kind"][value="${kind}"]`).checked = true;
+    f.date.value = main.date;
+    f.payee.value = main.payee || '';
+    f.amount.value = B.toInput(Math.abs(main.amount));
+    f.note.value = main.note || '';
+    if (main.envelopeId) f.envelopeId.value = main.envelopeId;
+    f.accountId.value = main.accountId;
+    if (main.toAccountId) f.toAccountId.value = main.toAccountId;
+    f.repeat.value = '';
+    $('#tx-heading').textContent = 'Edit transaction';
+    $('#tx-submit').textContent = 'Update transaction';
+    $('#tx-cancel').hidden = false;
+    syncKind();
+    f.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function stopEditing() {
+    editingTx = null;
+    const f = $('#tx-form');
+    f.payee.value = '';
+    f.amount.value = '';
+    f.note.value = '';
+    f.repeat.value = '';
+    $('#tx-heading').textContent = 'Add transaction';
+    $('#tx-submit').textContent = 'Save transaction';
+    $('#tx-cancel').hidden = true;
+    syncKind();
   }
 
   $('#tx-form').addEventListener('submit', (ev) => {
@@ -362,22 +571,35 @@
     const f = ev.target;
     const kind = f.kind.value;
     const cents = B.parseMoney(f.amount.value);
+    let scheduled = false;
     const ok = attempt(() => {
       if (Number.isNaN(cents)) throw new Error('Enter an amount like 12.50.');
-      B.addTransaction(budget, {
+      const fields = {
         kind,
         date: f.date.value,
         payee: f.payee.value,
         note: f.note.value,
         amount: Math.abs(cents),
         envelopeId: kind === 'spend' ? f.envelopeId.value : null,
-      });
+        accountId: f.accountId.value || null,
+        toAccountId: kind === 'transfer' ? f.toAccountId.value : null,
+      };
+      if (editingTx) {
+        B.updateTransaction(budget, editingTx, fields);
+      } else if (f.repeat.value && kind !== 'transfer') {
+        const freq = f.repeat.value === 'biweekly' ? 'weekly' : f.repeat.value;
+        const every = f.repeat.value === 'biweekly' ? 2 : 1;
+        B.addRecurring(budget, { ...fields, freq, every, next: fields.date });
+        scheduled = B.applyRecurring(budget, todayISO()) === 0;
+      } else {
+        B.addTransaction(budget, fields);
+      }
     });
     if (ok) {
-      f.amount.value = '';
-      f.payee.value = '';
-      f.note.value = '';
-      f.amount.focus();
+      const wasEditing = !!editingTx;
+      stopEditing();
+      if (scheduled) setSync(`Scheduled: it will be added on ${f.date.value}`);
+      if (!wasEditing) f.amount.focus();
     }
   });
 
@@ -453,7 +675,16 @@
     editingTarget = envId;
     const t = env.target || (env.goal ? { type: 'balance', amount: env.goal } : null);
     const f = $('#target-form');
-    $('#target-title').textContent = `Target for ${env.name}`;
+    $('#target-title').textContent = env.name;
+    $('#target-error').hidden = true;
+    f.envName.value = env.name;
+    f.envGroup.value = env.group;
+    const others = budget.envelopes.filter((e) => e.id !== envId);
+    const used = budget.transactions.some((t) => t.envelopeId === envId)
+      || (budget.recurring || []).some((r) => r.envelopeId === envId);
+    f.moveTo.innerHTML = others.map((e) => `<option value="${e.id}">${esc(e.group)} · ${esc(e.name)}</option>`).join('');
+    $('#move-to-field').hidden = !used;
+    f.querySelector('.danger-zone').open = false;
     f.type.value = t ? t.type : '';
     f.amount.value = t ? B.toInput(t.amount) : '';
     f.until.value = t && t.until ? t.until : '';
@@ -487,6 +718,7 @@
       if (type === 'weekly') target.weekday = Number(f.weekday.value);
     }
     try {
+      B.updateEnvelope(budget, editingTarget, { name: f.envName.value, group: f.envGroup.value });
       B.setTarget(budget, editingTarget, target);
     } catch (err) {
       $('#target-error').textContent = err.message;

@@ -86,7 +86,7 @@ test('spend requires an existing envelope and positive amount', () => {
 test('an envelope with transactions cannot be removed', () => {
   const { b, food } = sample();
   B.addTransaction(b, { kind: 'spend', date: '2026-10-01', amount: 100, envelopeId: food.id });
-  assert.throws(() => B.removeEnvelope(b, food.id), /Delete this envelope's transactions/);
+  assert.throws(() => B.removeEnvelope(b, food.id), /Move or delete this envelope's transactions/);
 });
 
 test('removing an envelope clears its assignments', () => {
@@ -249,4 +249,93 @@ test('targets validate their fields', () => {
   assert.throws(() => B.setTarget(b, e.id, { type: 'repeating', amount: 100, every: 0, next: '2027-01' }), /1 to 120/);
   B.setTarget(b, e.id, null);
   assert.equal(B.envelopeStatus(b, e.id, '2026-10').needed, null);
+});
+
+test('accounts: starting balance is income, transfers do not touch the budget', () => {
+  const b = B.create();
+  const chk = B.addAccount(b, { name: 'Checking', balance: 100000, date: '2026-10-01' });
+  const sav = B.addAccount(b, { name: 'Savings', balance: 0 });
+  assert.equal(B.readyToAssign(b, '2026-10'), 100000);
+  B.addTransaction(b, { kind: 'transfer', date: '2026-10-02', amount: 30000, accountId: chk.id, toAccountId: sav.id });
+  assert.equal(B.accountBalance(b, chk.id), 70000);
+  assert.equal(B.accountBalance(b, sav.id), 30000);
+  assert.equal(B.readyToAssign(b, '2026-10'), 100000);
+  // Deleting one leg removes both.
+  const leg = b.transactions.find((t) => t.transferId && t.accountId === sav.id);
+  B.removeTransaction(b, leg.id);
+  assert.equal(b.transactions.filter((t) => t.transferId).length, 0);
+});
+
+test('reconcile adds an adjustment for the difference and marks transactions', () => {
+  const b = B.create();
+  const chk = B.addAccount(b, { name: 'Checking', balance: 50000, date: '2026-10-01' });
+  const env = B.addEnvelope(b, { name: 'Food' });
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-05', amount: 2000, envelopeId: env.id, accountId: chk.id });
+  assert.equal(B.reconcileAccount(b, chk.id, 47500, '2026-10-10'), -500);
+  assert.equal(B.accountBalance(b, chk.id), 47500);
+  assert.equal(b.accounts[0].reconciledBalance, 47500);
+  assert.ok(b.transactions.filter((t) => t.accountId === chk.id).every((t) => t.reconciled));
+  assert.equal(B.reconcileAccount(b, chk.id, 47500, '2026-10-11'), 0);
+});
+
+test('old budgets get a Main account holding their transactions', () => {
+  const old = { envelopes: [], transactions: [{ id: 't', date: '2026-10-01', amount: 100, envelopeId: null }], assignments: {} };
+  const b = B.fromJSON(old);
+  assert.equal(b.accounts.length, 1);
+  assert.equal(b.accounts[0].name, 'Main account');
+  assert.equal(b.transactions[0].accountId, b.accounts[0].id);
+});
+
+test('envelopes can be renamed, regrouped and deleted with their transactions moved', () => {
+  const b = B.create();
+  const a = B.addEnvelope(b, { name: 'Food' });
+  const c = B.addEnvelope(b, { name: 'Groceries' });
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-05', amount: 2000, envelopeId: a.id });
+  B.updateEnvelope(b, a.id, { name: 'Eating out', group: 'Fun' });
+  assert.equal(b.envelopes[0].name, 'Eating out');
+  assert.equal(b.envelopes[0].group, 'Fun');
+  assert.throws(() => B.deleteEnvelope(b, a.id, null), /Pick an envelope/);
+  B.deleteEnvelope(b, a.id, c.id);
+  assert.equal(b.envelopes.length, 1);
+  assert.equal(b.transactions[0].envelopeId, c.id);
+});
+
+test('transactions can be edited, including changing their type', () => {
+  const b = B.create();
+  const env = B.addEnvelope(b, { name: 'Food' });
+  const t = B.addTransaction(b, { kind: 'spend', date: '2026-10-05', amount: 2000, envelopeId: env.id, payee: 'Shop' });
+  B.updateTransaction(b, t.id, { kind: 'spend', date: '2026-10-06', amount: 2500, envelopeId: env.id, payee: 'Market' });
+  assert.equal(b.transactions.length, 1);
+  assert.equal(b.transactions[0].id, t.id);
+  assert.equal(b.transactions[0].amount, -2500);
+  assert.equal(b.transactions[0].payee, 'Market');
+  B.updateTransaction(b, t.id, { kind: 'income', date: '2026-10-06', amount: 2500 });
+  assert.equal(B.transactionKind(b.transactions[0]), 'income');
+});
+
+test('recurring transactions are created when due, and month ends are clamped', () => {
+  const b = B.create();
+  const env = B.addEnvelope(b, { name: 'Rent' });
+  B.addRecurring(b, { kind: 'spend', amount: 90000, payee: 'Landlord', envelopeId: env.id, freq: 'monthly', every: 1, next: '2026-01-31' });
+  assert.equal(B.applyRecurring(b, '2026-03-15'), 2);
+  assert.deepEqual(b.transactions.map((t) => t.date), ['2026-01-31', '2026-02-28']);
+  assert.equal(b.recurring[0].next, '2026-03-31');
+  assert.equal(B.applyRecurring(b, '2026-03-15'), 0);
+  B.addRecurring(b, { kind: 'income', amount: 5000, freq: 'weekly', every: 2, next: '2026-03-02' });
+  // Rent on the 31st, plus pay every 2 weeks on the 2nd, 16th and 30th.
+  assert.equal(B.applyRecurring(b, '2026-03-31'), 4);
+});
+
+test('report sums spending per envelope and income per month', () => {
+  const b = B.create();
+  const food = B.addEnvelope(b, { name: 'Food' });
+  B.addTransaction(b, { kind: 'income', date: '2026-09-01', amount: 100000 });
+  B.addTransaction(b, { kind: 'spend', date: '2026-09-10', amount: 3000, envelopeId: food.id });
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-10', amount: 5000, envelopeId: food.id });
+  const r = B.report(b, '2026-10', 3);
+  assert.deepEqual(r.months, ['2026-08', '2026-09', '2026-10']);
+  assert.deepEqual(r.income, [0, 100000, 0]);
+  assert.deepEqual(r.spending, [0, 3000, 5000]);
+  assert.equal(r.rows[0].name, 'Food');
+  assert.equal(r.rows[0].total, 8000);
 });

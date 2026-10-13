@@ -18,7 +18,22 @@ down. Unspent money rolls over automatically.
   how much is missing and offers a one-click "Fund goal".
 - **Transparent math.** Available = everything assigned + all activity, so you
   can check any number by hand. The core logic lives in `src/budget.js`.
-- **Portable.** Export a JSON backup and import it anywhere.
+- **Portable.** Export a JSON backup and import it anywhere, or import
+  transactions exported from Actual Budget (CSV).
+
+## Features
+
+- Envelopes with six target types (monthly, weekly, refill, balance, balance
+  by a date, repeating bill). Shortfalls show in red; "Fund all targets" fills
+  them from Ready to Assign.
+- Accounts with starting balances, transfers between accounts, and
+  reconciling against your bank balance.
+- Recurring transactions (weekly, every 2 weeks, monthly, yearly), created
+  automatically when due.
+- Reports: spending per envelope plus income, spending and net per month.
+- Edit any transaction; rename, regroup or delete envelopes (moving their
+  transactions to another envelope).
+- Works on phones, with light and dark themes.
 
 ## Run it
 
@@ -52,7 +67,12 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/danielsacosta4/Envelo/ma
 - Each account only ever reads and writes its own budget.
 - Repeated failed sign-ins are rate limited per IP.
 - All data is in one JSON file, `DATA_DIR/db.json`, written atomically and
-  readable only by the server user. Back up that directory.
+  readable only by the server user.
+- The server keeps a daily copy in `DATA_DIR/backups/`, for the last 14 days.
+  To restore one, stop the service and copy it over `db.json`.
+- Saves carry a revision number. If another device saved first, the save is
+  refused and the app shows the latest version, so devices never silently
+  overwrite each other.
 
 ## Security notes
 

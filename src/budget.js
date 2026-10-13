@@ -19,9 +19,24 @@
       : Math.random().toString(36).slice(2) + Date.now().toString(36);
 
   const monthOf = (date) => date.slice(0, 7);
+  const todayISO = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
 
   function create() {
-    return { version: 1, currency: 'EUR', envelopes: [], transactions: [], assignments: {} };
+    return { version: 1, currency: 'EUR', accounts: [], envelopes: [], transactions: [], assignments: {}, recurring: [] };
+  }
+
+  // Older budgets have no accounts. Put their transactions in one "Main account".
+  function ensureAccounts(b) {
+    if (!Array.isArray(b.accounts)) b.accounts = [];
+    if (!Array.isArray(b.recurring)) b.recurring = [];
+    if (b.transactions.some((t) => !t.accountId)) {
+      const main = b.accounts[0] || addAccount(b, { name: 'Main account' });
+      for (const t of b.transactions) if (!t.accountId) t.accountId = main.id;
+    }
+    return b;
   }
 
   function addEnvelope(b, { name, group, goal, target }) {
@@ -137,7 +152,32 @@
 
   function removeEnvelope(b, id) {
     if (b.transactions.some((t) => t.envelopeId === id)) {
-      throw new Error("Delete this envelope's transactions first.");
+      throw new Error("Move or delete this envelope's transactions first.");
+    }
+    deleteEnvelope(b, id, null);
+  }
+
+  function updateEnvelope(b, id, { name, group }) {
+    const env = b.envelopes.find((e) => e.id === id);
+    if (!env) throw new Error('Unknown envelope.');
+    const clean = String(name || '').trim();
+    if (!clean) throw new Error('Envelope needs a name.');
+    env.name = clean;
+    env.group = String(group || '').trim() || 'General';
+  }
+
+  // Delete an envelope. Its transactions and recurring rules move to `moveToId`.
+  // Money assigned to it goes back to Ready to Assign.
+  function deleteEnvelope(b, id, moveToId) {
+    if (!b.envelopes.some((e) => e.id === id)) throw new Error('Unknown envelope.');
+    const used = b.transactions.some((t) => t.envelopeId === id)
+      || (b.recurring || []).some((r) => r.envelopeId === id);
+    if (used) {
+      if (!moveToId || moveToId === id || !b.envelopes.some((e) => e.id === moveToId)) {
+        throw new Error('Pick an envelope to move its transactions to.');
+      }
+      for (const t of b.transactions) if (t.envelopeId === id) t.envelopeId = moveToId;
+      for (const r of b.recurring || []) if (r.envelopeId === id) r.envelopeId = moveToId;
     }
     b.envelopes = b.envelopes.filter((e) => e.id !== id);
     for (const m of Object.keys(b.assignments)) {
@@ -148,37 +188,241 @@
 
   // kind: 'spend' draws from an envelope; 'income' adds to Ready to Assign.
   // amount: positive integer cents.
-  function addTransaction(b, { kind, date, payee, amount, envelopeId, note }) {
+  // Accounts
+
+  function addAccount(b, { name, balance = 0, date }) {
+    if (!Array.isArray(b.accounts)) b.accounts = [];
+    const clean = String(name || '').trim();
+    if (!clean) throw new Error('Account needs a name.');
+    const acct = { id: newId(), name: clean, reconciledAt: null, reconciledBalance: null };
+    b.accounts.push(acct);
+    const start = Number(balance) || 0;
+    if (start !== 0) {
+      if (!Number.isInteger(start)) throw new Error('Starting balance must be an amount.');
+      b.transactions.push({
+        id: newId(), date: date || todayISO(), payee: 'Starting balance', note: '',
+        amount: start, envelopeId: null, accountId: acct.id,
+      });
+    }
+    return acct;
+  }
+
+  function updateAccount(b, id, { name }) {
+    const acct = (b.accounts || []).find((a) => a.id === id);
+    if (!acct) throw new Error('Unknown account.');
+    const clean = String(name || '').trim();
+    if (!clean) throw new Error('Account needs a name.');
+    acct.name = clean;
+  }
+
+  function deleteAccount(b, id) {
+    if (b.transactions.some((t) => t.accountId === id || t.toAccountId === id)) {
+      throw new Error('This account has transactions. Delete or move them first.');
+    }
+    if ((b.recurring || []).some((r) => r.accountId === id)) {
+      throw new Error('A recurring transaction uses this account. Remove it first.');
+    }
+    b.accounts = b.accounts.filter((a) => a.id !== id);
+  }
+
+  function accountBalance(b, id, upToDate) {
+    return b.transactions
+      .filter((t) => t.accountId === id && (!upToDate || t.date <= upToDate))
+      .reduce((sum, t) => sum + t.amount, 0);
+  }
+
+  function defaultAccountId(b) {
+    if (!Array.isArray(b.accounts)) b.accounts = [];
+    return (b.accounts[0] || addAccount(b, { name: 'Main account' })).id;
+  }
+
+  // Bring an account in line with the bank. Any difference becomes an
+  // adjustment that goes to Ready to Assign, and everything up to `date` is
+  // marked reconciled. Returns the adjustment in cents (0 if it matched).
+  function reconcileAccount(b, id, bankBalance, date) {
+    const acct = (b.accounts || []).find((a) => a.id === id);
+    if (!acct) throw new Error('Unknown account.');
+    if (!Number.isInteger(bankBalance)) throw new Error('Enter the balance your bank shows.');
+    const day = date || todayISO();
+    if (!DATE_RE.test(day)) throw new Error('Date must be YYYY-MM-DD.');
+    const diff = bankBalance - accountBalance(b, id, day);
+    if (diff !== 0) {
+      b.transactions.push({
+        id: newId(), date: day, payee: 'Reconciliation adjustment', note: '',
+        amount: diff, envelopeId: null, accountId: id, adjustment: true,
+      });
+    }
+    for (const t of b.transactions) if (t.accountId === id && t.date <= day) t.reconciled = true;
+    acct.reconciledAt = day;
+    acct.reconciledBalance = bankBalance;
+    return diff;
+  }
+
+  // Transactions
+
+  // kind: 'spend' draws from an envelope; 'income' adds to Ready to Assign;
+  // 'transfer' moves money between two accounts and does not touch the budget.
+  // amount: positive integer cents.
+  function buildTransaction(b, { kind, date, payee, amount, envelopeId, note, accountId, toAccountId }) {
     if (!DATE_RE.test(date || '')) throw new Error('Date must be YYYY-MM-DD.');
     const cents = Number(amount);
     if (!Number.isInteger(cents) || cents <= 0) throw new Error('Amount must be greater than zero.');
-
-    let signed;
-    let envId = null;
-    if (kind === 'income') {
-      signed = cents;
-    } else if (kind === 'spend') {
-      if (!b.envelopes.some((e) => e.id === envelopeId)) throw new Error('Pick an envelope.');
-      signed = -cents;
-      envId = envelopeId;
-    } else {
-      throw new Error('Unknown transaction type.');
-    }
-
-    const t = {
-      id: newId(),
+    const acctId = accountId || defaultAccountId(b);
+    if (!b.accounts.some((a) => a.id === acctId)) throw new Error('Pick an account.');
+    const base = {
       date,
       payee: String(payee || '').trim(),
       note: String(note || '').trim(),
-      amount: signed,
-      envelopeId: envId,
+      accountId: acctId,
     };
-    b.transactions.push(t);
-    return t;
+    if (kind === 'income') return [{ ...base, amount: cents, envelopeId: null }];
+    if (kind === 'spend') {
+      if (!b.envelopes.some((e) => e.id === envelopeId)) throw new Error('Pick an envelope.');
+      return [{ ...base, amount: -cents, envelopeId }];
+    }
+    if (kind === 'transfer') {
+      if (!toAccountId || toAccountId === acctId || !b.accounts.some((a) => a.id === toAccountId)) {
+        throw new Error('Pick a different account to transfer to.');
+      }
+      const transferId = newId();
+      const toName = b.accounts.find((a) => a.id === toAccountId).name;
+      const fromName = b.accounts.find((a) => a.id === acctId).name;
+      return [
+        { ...base, payee: base.payee || `Transfer to ${toName}`, amount: -cents, envelopeId: null, transferId, toAccountId },
+        { ...base, payee: base.payee || `Transfer from ${fromName}`, amount: cents, envelopeId: null, transferId, accountId: toAccountId, toAccountId: acctId },
+      ];
+    }
+    throw new Error('Unknown transaction type.');
+  }
+
+  function addTransaction(b, fields) {
+    const legs = buildTransaction(b, fields).map((t) => ({ id: newId(), ...t }));
+    b.transactions.push(...legs);
+    return legs[0];
+  }
+
+  // What kind of transaction this is, for the edit form.
+  function transactionKind(t) {
+    if (t.transferId) return 'transfer';
+    return t.envelopeId ? 'spend' : 'income';
+  }
+
+  function updateTransaction(b, id, fields) {
+    const old = b.transactions.find((t) => t.id === id);
+    if (!old) throw new Error('Unknown transaction.');
+    const legs = buildTransaction(b, fields);
+    removeTransaction(b, id);
+    legs[0].id = old.id;
+    for (let i = 1; i < legs.length; i++) legs[i].id = newId();
+    if (old.recurringId) legs[0].recurringId = old.recurringId;
+    b.transactions.push(...legs);
+    return legs[0];
   }
 
   function removeTransaction(b, id) {
-    b.transactions = b.transactions.filter((t) => t.id !== id);
+    const t = b.transactions.find((x) => x.id === id);
+    if (!t) return;
+    b.transactions = b.transactions.filter((x) => x.id !== id && !(t.transferId && x.transferId === t.transferId));
+  }
+
+  // Recurring transactions
+  //   { id, kind: 'spend'|'income', amount, payee, note, envelopeId, accountId,
+  //     freq: 'weekly'|'monthly'|'yearly', every, next: 'YYYY-MM-DD', day }
+
+  function normalizeRecurring(b, r) {
+    const freq = r.freq;
+    if (!['weekly', 'monthly', 'yearly'].includes(freq)) throw new Error('Pick how often it repeats.');
+    const every = Number(r.every || 1);
+    if (!Number.isInteger(every) || every < 1 || every > 52) throw new Error('Repeat every 1 to 52 periods.');
+    if (!DATE_RE.test(r.next || '')) throw new Error('Pick the next date.');
+    // Validate amount, envelope and account the same way as a real transaction.
+    buildTransaction(b, { ...r, date: r.next });
+    return {
+      id: r.id || newId(),
+      kind: r.kind,
+      amount: Number(r.amount),
+      payee: String(r.payee || '').trim(),
+      note: String(r.note || '').trim(),
+      envelopeId: r.kind === 'spend' ? r.envelopeId : null,
+      accountId: r.accountId || defaultAccountId(b),
+      freq,
+      every,
+      next: r.next,
+      day: Number(r.next.slice(8, 10)),
+    };
+  }
+
+  function addRecurring(b, r) {
+    if (!['spend', 'income'].includes(r.kind)) throw new Error('Recurring transactions are spending or income.');
+    const rule = normalizeRecurring(b, r);
+    b.recurring.push(rule);
+    return rule;
+  }
+
+  function removeRecurring(b, id) {
+    b.recurring = (b.recurring || []).filter((r) => r.id !== id);
+  }
+
+  function nextRecurringDate(rule, date) {
+    const [y, m] = date.split('-').map(Number);
+    if (rule.freq === 'weekly') {
+      const d = new Date(`${date}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + 7 * rule.every);
+      return d.toISOString().slice(0, 10);
+    }
+    const months = rule.freq === 'yearly' ? 12 * rule.every : rule.every;
+    const target = new Date(Date.UTC(y, m - 1 + months, 1));
+    const ty = target.getUTCFullYear();
+    const tm = target.getUTCMonth();
+    const lastDay = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate();
+    const day = Math.min(rule.day, lastDay);
+    return `${ty}-${String(tm + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  // Create every recurring transaction due on or before `today`. Returns how many.
+  function applyRecurring(b, today) {
+    let created = 0;
+    for (const rule of b.recurring || []) {
+      let guard = 0;
+      while (rule.next <= today && guard++ < 500) {
+        const t = addTransaction(b, { ...rule, date: rule.next });
+        t.recurringId = rule.id;
+        rule.next = nextRecurringDate(rule, rule.next);
+        created++;
+      }
+    }
+    return created;
+  }
+
+  // Reports: spending per envelope and income per month for the `count`
+  // months ending with `endMonth`. Transfers are left out.
+  function report(b, endMonth, count = 6) {
+    const months = [];
+    for (let i = count - 1; i >= 0; i--) months.push(shiftMonth(endMonth, -i));
+    const index = new Map(months.map((m, i) => [m, i]));
+    const income = months.map(() => 0);
+    const spending = months.map(() => 0);
+    const byEnv = new Map();
+    for (const t of b.transactions) {
+      const i = index.get(monthOf(t.date));
+      if (i === undefined || t.transferId) continue;
+      if (!t.envelopeId) {
+        income[i] += t.amount;
+        continue;
+      }
+      if (!byEnv.has(t.envelopeId)) byEnv.set(t.envelopeId, months.map(() => 0));
+      byEnv.get(t.envelopeId)[i] -= t.amount;
+      spending[i] -= t.amount;
+    }
+    const rows = [];
+    for (const [id, perMonth] of byEnv) {
+      const env = b.envelopes.find((e) => e.id === id);
+      const total = perMonth.reduce((a, v) => a + v, 0);
+      if (total === 0) continue;
+      rows.push({ id, name: env ? env.name : 'Deleted envelope', group: env ? env.group : '', perMonth, total, average: Math.round(total / count) });
+    }
+    rows.sort((a, c) => c.total - a.total);
+    return { months, income, spending, rows };
   }
 
   function assignedIn(b, month, envId) {
@@ -202,7 +446,7 @@
   // Negative means you have assigned more than you have.
   function readyToAssign(b, month) {
     const income = b.transactions
-      .filter((t) => !t.envelopeId && monthOf(t.date) <= month)
+      .filter((t) => !t.envelopeId && !t.transferId && monthOf(t.date) <= month)
       .reduce((sum, t) => sum + t.amount, 0);
     let assigned = 0;
     for (const m of Object.keys(b.assignments)) {
@@ -331,14 +575,17 @@
         || !obj.assignments || typeof obj.assignments !== 'object') {
       throw new Error('This file is not an Envelo backup.');
     }
-    return {
+    return ensureAccounts({
       version: 1,
       currency: obj.currency || 'EUR',
       envelopes: obj.envelopes,
       transactions: obj.transactions,
       assignments: obj.assignments,
-    };
+      accounts: Array.isArray(obj.accounts) ? obj.accounts : [],
+      recurring: Array.isArray(obj.recurring) ? obj.recurring : [],
+    });
   }
+
 
   // Minimal RFC 4180 CSV parser: quoted fields, escaped quotes, CRLF.
   function parseCsv(text) {
@@ -383,6 +630,7 @@
     const iNotes = col('notes', 'memo');
     const iCat = col('category');
     const iGroup = col('category group', 'category_group', 'group');
+    const iAccount = col('account');
     const iAmount = col('amount');
     const iIn = col('inflow');
     const iOut = col('outflow');
@@ -431,7 +679,17 @@
         }
         envelopeId = env.id;
       }
-      b.transactions.push({ id: newId(), date, payee, note: notes, amount: cents, envelopeId, importKey: key });
+      const accountName = get(iAccount);
+      let accountId;
+      if (accountName) {
+        if (!Array.isArray(b.accounts)) b.accounts = [];
+        const acct = b.accounts.find((a) => a.name.toLowerCase() === accountName.toLowerCase())
+          || addAccount(b, { name: accountName });
+        accountId = acct.id;
+      } else {
+        accountId = defaultAccountId(b);
+      }
+      b.transactions.push({ id: newId(), date, payee, note: notes, amount: cents, envelopeId, accountId, importKey: key });
       seen.add(key);
       result.imported++;
       if (isIncome) result.income++;
@@ -453,6 +711,9 @@
     setAssigned, assignedIn, readyToAssign, envelopeStatus, monthView,
     shiftMonth, parseMoney, formatMoney, toInput, fromJSON,
     setTarget, normalizeTarget, fundAllTargets, weekdaysInMonth,
+    updateEnvelope, deleteEnvelope, updateTransaction, transactionKind,
+    addAccount, updateAccount, deleteAccount, accountBalance, reconcileAccount, ensureAccounts,
+    addRecurring, removeRecurring, applyRecurring, nextRecurringDate, report,
     parseCsv, importTransactionsCsv,
   };
 
