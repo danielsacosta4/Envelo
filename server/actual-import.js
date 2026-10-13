@@ -237,7 +237,7 @@ function actualToEnvelo(rows, { currency = 'EUR' } = {}) {
   return { budget, summary };
 }
 
-function importActualZip(zipBuffer, { currency, engine } = {}) {
+function importActualZip(zipBuffer, { currency, engine, tmpDir } = {}) {
   const dbBytes = readZipEntry(zipBuffer, 'db.sqlite');
   if (!dbBytes) {
     throw new Error('This zip has no db.sqlite. In Actual, use Settings > Export data and import that file.');
@@ -248,7 +248,11 @@ function importActualZip(zipBuffer, { currency, engine } = {}) {
     try { name = JSON.parse(meta.toString('utf8')).budgetName || ''; } catch { /* name is optional */ }
   }
 
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'envelo-actual-'));
+  // tmpDir lets the server use a folder it can write to; under systemd's
+  // ProtectSystem=strict the system /tmp may be read-only.
+  const base = tmpDir || os.tmpdir();
+  fs.mkdirSync(base, { recursive: true, mode: 0o700 });
+  const dir = fs.mkdtempSync(path.join(base, 'envelo-actual-'));
   const file = path.join(dir, 'db.sqlite');
   try {
     fs.writeFileSync(file, dbBytes, { mode: 0o600 });

@@ -317,7 +317,10 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
       const current = db.budgets[user.email];
       let result;
       try {
-        result = importActualZip(zip, { currency: current && current.budget ? current.budget.currency : 'EUR' });
+        result = importActualZip(zip, {
+          currency: current && current.budget ? current.budget.currency : 'EUR',
+          tmpDir: path.join(dataDir, 'tmp'),
+        });
       } catch (err) {
         throw new HttpError(400, err.message);
       }

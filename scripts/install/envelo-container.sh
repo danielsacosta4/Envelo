@@ -100,6 +100,7 @@ Group=envelo
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ProtectSystem=strict
+PrivateTmp=true
 ReadWritePaths=/var/lib/envelo
 
 [Install]
