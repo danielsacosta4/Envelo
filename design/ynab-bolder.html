@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Envelo: YNAB, bolder</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #e9e6df; color: #111; font: 500 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .intro { max-width: 1040px; margin: 0 auto; padding: 36px 20px 8px; }
+  .intro h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: -.02em; }
+  .intro p { margin: 0; color: #555; max-width: 680px; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 20px 20px 60px; display: grid; gap: 44px; }
+  .variant h2 { margin: 0 0 4px; font-size: 20px; }
+  .variant .note { margin: 0 0 14px; color: #555; font-size: 14px; }
+  .screen { border-radius: 16px; overflow: hidden; border: 1px solid rgba(0,0,0,.12); }
+
+  /* shared structure */
+  .hdr { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding: 22px 24px; flex-wrap: wrap; }
+  .hdr .mo { font-size: 34px; font-weight: 900; letter-spacing: -.03em; line-height: 1; }
+  .hdr .mo small { display: block; font-size: 12px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; margin-bottom: 6px; opacity: .8; }
+  .rta { padding: 12px 18px; text-align: right; min-width: 240px; }
+  .rta .l { font-size: 11px; font-weight: 900; letter-spacing: .14em; text-transform: uppercase; }
+  .rta .v { font-size: 38px; font-weight: 900; letter-spacing: -.03em; font-variant-numeric: tabular-nums; line-height: 1.05; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-size: 11px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; padding: 10px 18px; }
+  td { padding: 12px 18px; }
+  th.n, td.n { text-align: right; }
+  .nm { font-weight: 800; }
+  .sub { display: block; font-size: 12px; font-weight: 500; opacity: .75; margin-top: 2px; }
+  .bar { height: 8px; margin-top: 8px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; }
+  .amt { font-weight: 900; }
+  .tag { display: inline-block; font-size: 11px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; padding: 3px 8px; }
+  .foot { display: flex; gap: 10px; padding: 16px 18px; flex-wrap: wrap; }
+  .btn { font: inherit; font-weight: 900; padding: 10px 16px; border: none; cursor: pointer; }
+
+  /* 1. Colour-blocked groups */
+  .v1 .screen { background: #fff; }
+  .v1 .hdr { background: #ff5a3c; color: #fff; }
+  .v1 .rta { background: #fff; color: #111; }
+  .v1 .grp td { font-weight: 900; text-transform: uppercase; letter-spacing: .1em; font-size: 12px; padding: 10px 18px; }
+  .v1 .g-bills td { background: #ffd6cc; }
+  .v1 .g-daily td { background: #cdeee0; }
+  .v1 .g-save td { background: #cfe0ff; }
+  .v1 tr td { border-bottom: 2px solid #111; }
+  .v1 .btn { background: #111; color: #fff; }
+
+  /* 2. Dark neon */
+  .v2 .screen { background: #0b0d0c; color: #e9fff4; }
+  .v2 .hdr { border-bottom: 2px solid #b6ff3b; }
+  .v2 .mo { color: #fff; }
+  .v2 .rta { border: 2px solid #b6ff3b; box-shadow: 0 0 24px rgba(182,255,59,.35); }
+  .v2 .rta .v { color: #b6ff3b; text-shadow: 0 0 18px rgba(182,255,59,.6); }
+  .v2 th { color: #b6ff3b; }
+  .v2 tbody tr { border-bottom: 1px solid #1f2622; }
+  .v2 .bar { background: #1f2622; }
+  .v2 .bar > i { background: #b6ff3b; box-shadow: 0 0 10px #b6ff3b; }
+  .v2 .over .amt { color: #ff4d6d; text-shadow: 0 0 12px rgba(255,77,109,.6); }
+  .v2 .btn { background: #b6ff3b; color: #0b0d0c; }
+
+  /* 3. Editorial big numbers */
+  .v3 .screen { background: #f7f1e5; color: #1a1a1a; font-family: Georgia, "Times New Roman", serif; }
+  .v3 .hdr { border-bottom: 4px double #1a1a1a; }
+  .v3 .mo { font-size: 52px; font-style: italic; font-weight: 400; }
+  .v3 .rta { background: transparent; text-align: left; min-width: 0; padding: 0; }
+  .v3 .rta .l { font-family: system-ui, sans-serif; }
+  .v3 .rta .v { font-size: 72px; font-weight: 400; color: #b3261e; font-style: italic; }
+  .v3 th { font-family: system-ui, sans-serif; border-bottom: 2px solid #1a1a1a; }
+  .v3 td { border-bottom: 1px solid #cfc6b2; font-size: 17px; }
+  .v3 .amt { font-weight: 400; font-size: 22px; }
+  .v3 .nm { font-size: 19px; font-weight: 700; }
+  .v3 .btn { background: #1a1a1a; color: #f7f1e5; font-family: system-ui, sans-serif; }
+
+  /* 4. Envelope tiles */
+  .v4 .screen { background: #1d2a44; color: #fff; }
+  .v4 .hdr { background: #ffb400; color: #1d2a44; }
+  .v4 .rta { background: #1d2a44; color: #ffb400; border-radius: 14px; }
+  .v4 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px,1fr)); gap: 14px; padding: 18px; }
+  .v4 .tile { border-radius: 16px; padding: 16px; min-height: 150px; display: flex; flex-direction: column; justify-content: space-between; position: relative; overflow: hidden; }
+  .v4 .tile .fill { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,.18); }
+  .v4 .tile > * { position: relative; }
+  .v4 .tile .amt { font-size: 28px; }
+  .v4 .t-rent { background: #ff7a59; color: #1d2a44; }
+  .v4 .t-groc { background: #3ddc97; color: #0c2a1e; }
+  .v4 .t-dine { background: #e63946; color: #fff; }
+  .v4 .t-fund { background: #7b6cff; color: #fff; }
+  .v4 .t-fun  { background: #ffd166; color: #3b2a00; }
+
+  /* 5. Stamp / sticker */
+  .v5 .screen { background: #fff7d6; color: #111; }
+  .v5 .hdr { background: #111; color: #fff; }
+  .v5 .rta { background: #ffd166; color: #111; transform: rotate(-2deg); border: 4px solid #111; box-shadow: 8px 8px 0 #111; }
+  .v5 .rowcard { margin: 0 18px 12px; border: 3px solid #111; background: #fff; box-shadow: 5px 5px 0 #111; position: relative; }
+  .v5 .rowcard td { border: none; }
+  .v5 .stamp { position: absolute; right: 16px; top: -14px; background: #fff7d6; transform: rotate(8deg); border: 3px solid #e63946; color: #e63946; font-weight: 900; padding: 2px 10px; letter-spacing: .12em; font-size: 13px; }
+  .v5 .ok-stamp { border-color: #1f8a5b; color: #1f8a5b; }
+  .v5 table { border-collapse: separate; border-spacing: 0; }
+  .v5 .btn { background: #e63946; color: #fff; box-shadow: 4px 4px 0 #111; }
+
+  @media (max-width: 680px) {
+    .hdr .mo { font-size: 26px; }
+    .rta .v { font-size: 30px; }
+    .v3 .mo { font-size: 36px; }
+    .v3 .rta .v { font-size: 48px; }
+    th { display: none; }
+    td { display: block; padding: 6px 18px; }
+    td.n::before { content: attr(data-label); display: block; font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: .1em; opacity: .7; }
+  }
+</style>
+</head>
+<body>
+<div class="intro">
+  <h1>Envelo: YNAB, bolder</h1>
+  <p>Five directions built on YNAB's structure: accounts, categories, Budgeted, Spent, Available, and a Ready to Assign block. Each one pushes the look harder in a different way. Sample October data, EUR.</p>
+</div>
+
+<div class="wrap">
+
+<!-- 1 -->
+<section class="variant v1">
+  <h2>1. Colour-blocked groups</h2>
+  <p class="note">Each category group gets its own full-width colour band. The budget reads like a set of zones, not a list.</p>
+  <div class="screen">
+    <div class="hdr">
+      <div class="mo"><small>Budget</small>October 2026</div>
+      <div class="rta"><div class="l">Ready to assign</div><div class="v">€ 650.00</div></div>
+    </div>
+    <table>
+      <thead><tr><th>Envelope</th><th class="n">Budgeted</th><th class="n">Spent</th><th class="n">Available</th></tr></thead>
+      <tbody>
+        <tr class="grp g-bills"><td colspan="4">Bills</td></tr>
+        <tr class="g-bills"><td class="nm">Rent</td><td class="n" data-label="Budgeted">€ 1,200.00</td><td class="n" data-label="Spent">€ 1,200.00</td><td class="n amt" data-label="Available">€ 0.00</td></tr>
+        <tr class="g-bills"><td class="nm">Electricity</td><td class="n" data-label="Budgeted">€ 80.00</td><td class="n" data-label="Spent">€ 0.00</td><td class="n amt" data-label="Available">€ 80.00</td></tr>
+        <tr class="grp g-daily"><td colspan="4">Daily</td></tr>
+        <tr class="g-daily"><td class="nm">Groceries<span class="sub">€ 300 goal</span></td><td class="n" data-label="Budgeted">€ 300.00</td><td class="n" data-label="Spent">€ 142.10</td><td class="n amt" data-label="Available">€ 157.90</td></tr>
+        <tr class="g-daily"><td class="nm">Dining out<span class="sub">Over by € 18.40</span></td><td class="n" data-label="Budgeted">€ 120.00</td><td class="n" data-label="Spent">€ 138.40</td><td class="n amt" data-label="Available" style="color:#b3261e">− € 18.40</td></tr>
+        <tr class="grp g-save"><td colspan="4">Savings</td></tr>
+        <tr class="g-save"><td class="nm">Emergency fund<span class="sub">€ 2,000 by March</span></td><td class="n" data-label="Budgeted">€ 250.00</td><td class="n" data-label="Spent">€ 0.00</td><td class="n amt" data-label="Available">€ 1,240.00</td></tr>
+      </tbody>
+    </table>
+    <div class="foot"><button class="btn">+ Transaction</button></div>
+  </div>
+</section>
+
+<!-- 2 -->
+<section class="variant v2">
+  <h2>2. Dark neon</h2>
+  <p class="note">Black background with a lime glow on the number that matters. Overspending glows red. Built for late-night budgeting.</p>
+  <div class="screen">
+    <div class="hdr">
+      <div class="mo"><small>Budget</small>October 2026</div>
+      <div class="rta"><div class="l">Ready to assign</div><div class="v">€ 650.00</div></div>
+    </div>
+    <table>
+      <thead><tr><th>Envelope</th><th class="n">Budgeted</th><th class="n">Spent</th><th class="n">Available</th></tr></thead>
+      <tbody>
+        <tr><td class="nm">Rent<span class="sub">Fully funded</span></td><td class="n" data-label="Budgeted">€ 1,200.00</td><td class="n" data-label="Spent">€ 1,200.00</td><td class="n amt" data-label="Available">€ 0.00</td></tr>
+        <tr><td class="nm">Groceries<span class="sub">€ 300 goal</span><div class="bar"><i style="width:53%"></i></div></td><td class="n" data-label="Budgeted">€ 300.00</td><td class="n" data-label="Spent">€ 142.10</td><td class="n amt" data-label="Available">€ 157.90</td></tr>
+        <tr class="over"><td class="nm">Dining out<span class="sub">Over budget</span><div class="bar"><i style="width:100%;background:#ff4d6d;box-shadow:0 0 10px #ff4d6d"></i></div></td><td class="n" data-label="Budgeted">€ 120.00</td><td class="n" data-label="Spent">€ 138.40</td><td class="n amt" data-label="Available">− € 18.40</td></tr>
+        <tr><td class="nm">Emergency fund<span class="sub">€ 2,000 by March</span><div class="bar"><i style="width:62%"></i></div></td><td class="n" data-label="Budgeted">€ 250.00</td><td class="n" data-label="Spent">€ 0.00</td><td class="n amt" data-label="Available">€ 1,240.00</td></tr>
+      </tbody>
+    </table>
+    <div class="foot"><button class="btn">+ Transaction</button></div>
+  </div>
+</section>
+
+<!-- 3 -->
+<section class="variant v3">
+  <h2>3. Editorial big numbers</h2>
+  <p class="note">Serif type and oversized figures, like a financial magazine. The Ready to Assign number is the headline.</p>
+  <div class="screen">
+    <div class="hdr">
+      <div class="mo">October 2026</div>
+      <div class="rta"><div class="l">Ready to assign</div><div class="v">€650</div></div>
+    </div>
+    <table>
+      <thead><tr><th>Envelope</th><th class="n">Budgeted</th><th class="n">Spent</th><th class="n">Available</th></tr></thead>
+      <tbody>
+        <tr><td class="nm">Rent</td><td class="n" data-label="Budgeted">1,200</td><td class="n" data-label="Spent">1,200</td><td class="n amt" data-label="Available">0</td></tr>
+        <tr><td class="nm">Groceries</td><td class="n" data-label="Budgeted">300</td><td class="n" data-label="Spent">142.10</td><td class="n amt" data-label="Available">157.90</td></tr>
+        <tr><td class="nm">Dining out</td><td class="n" data-label="Budgeted">120</td><td class="n" data-label="Spent">138.40</td><td class="n amt" data-label="Available" style="color:#b3261e;font-style:italic">−18.40</td></tr>
+        <tr><td class="nm">Emergency fund</td><td class="n" data-label="Budgeted">250</td><td class="n" data-label="Spent">0</td><td class="n amt" data-label="Available">1,240</td></tr>
+      </tbody>
+    </table>
+    <div class="foot"><button class="btn">+ Transaction</button></div>
+  </div>
+</section>
+
+<!-- 4 -->
+<section class="variant v4">
+  <h2>4. Envelope tiles</h2>
+  <p class="note">Each envelope is a bold coloured tile, filled to show how much is left. The envelope metaphor is the whole interface.</p>
+  <div class="screen">
+    <div class="hdr">
+      <div class="mo"><small>Budget</small>October 2026</div>
+      <div class="rta"><div class="l">Ready to assign</div><div class="v">€ 650.00</div></div>
+    </div>
+    <div class="tiles">
+      <div class="tile t-rent"><span class="nm">Rent</span><span class="amt">€ 0.00</span><span class="sub">Fully funded</span></div>
+      <div class="tile t-groc"><span class="nm">Groceries</span><span class="amt">€ 157.90</span><span class="sub">€ 142 of € 300 spent</span><div class="fill" style="height:53%"></div></div>
+      <div class="tile t-dine"><span class="nm">Dining out</span><span class="amt">− € 18.40</span><span class="sub">Over by € 18.40</span></div>
+      <div class="tile t-fund"><span class="nm">Emergency fund</span><span class="amt">€ 1,240</span><span class="sub">Goal € 2,000 · € 250/mo</span><div class="fill" style="height:62%"></div></div>
+      <div class="tile t-fun"><span class="nm">Fun</span><span class="amt">€ 60.00</span><span class="sub">Nothing spent yet</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 5 -->
+<section class="variant v5">
+  <h2>5. Stamps and stickers</h2>
+  <p class="note">Each row is a card with a stamp that says what is going on: "On track" or "Over". The Ready to Assign block is tilted like a label.</p>
+  <div class="screen">
+    <div class="hdr">
+      <div class="mo"><small>Budget</small>October 2026</div>
+      <div class="rta"><div class="l">Ready to assign</div><div class="v">€ 650.00</div></div>
+    </div>
+    <div style="padding-top:6px">
+      <div class="rowcard"><div class="stamp ok-stamp">ON TRACK</div>
+        <table><tr><td class="nm" style="font-size:18px">Groceries<span class="sub">€ 300 · spent € 142.10</span></td><td class="n amt" style="font-size:22px">€ 157.90</td></tr></table></div>
+      <div class="rowcard"><div class="stamp">OVER</div>
+        <table><tr><td class="nm" style="font-size:18px">Dining out<span class="sub">€ 120 · spent € 138.40</span></td><td class="n amt" style="font-size:22px;color:#e63946">− € 18.40</td></tr></table></div>
+      <div class="rowcard"><div class="stamp ok-stamp">FUNDED</div>
+        <table><tr><td class="nm" style="font-size:18px">Rent<span class="sub">€ 1,200 · due 1st</span></td><td class="n amt" style="font-size:22px">€ 0.00</td></tr></table></div>
+      <div class="rowcard"><div class="stamp ok-stamp">GOAL 62%</div>
+        <table><tr><td class="nm" style="font-size:18px">Emergency fund<span class="sub">€ 2,000 by March · € 250/mo</span></td><td class="n amt" style="font-size:22px">€ 1,240</td></tr></table></div>
+    </div>
+    <div class="foot"><button class="btn">+ Transaction</button></div>
+  </div>
+</section>
+
+</div>
+</body>
+</html>
