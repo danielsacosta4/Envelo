@@ -286,3 +286,14 @@ test('the Actual import endpoint converts a zip without saving it', { skip: (() 
     await s.close();
   }
 });
+
+test('the server reports its version', async () => {
+  const s = await start();
+  try {
+    const res = await fetch(s.base + '/api/version');
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).version, require('../package.json').version);
+  } finally {
+    await s.close();
+  }
+});

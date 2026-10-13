@@ -51,15 +51,28 @@ rm -rf /opt/envelo.new && mkdir -p /opt/envelo.new
 cp -r "$TMP/server" "$TMP/src" "$TMP/index.html" /opt/envelo.new/
 [[ -f "$TMP/package.json" ]] && cp "$TMP/package.json" /opt/envelo.new/
 rm -rf /opt/envelo && mv /opt/envelo.new /opt/envelo
-# Re-apply the container setup from the new version (autologin, banner, this command).
+# Re-apply the container setup from the new version (autologin, banner, this
+# command). A problem here must never stop the restart below.
 if [[ -f "$TMP/scripts/install/envelo-container.sh" ]]; then
-  bash "$TMP/scripts/install/envelo-container.sh" --refresh
-fi
-# On first install the service does not exist yet; the installer starts it.
-if systemctl cat envelo >/dev/null 2>&1; then
-  systemctl restart envelo
+  bash "$TMP/scripts/install/envelo-container.sh" --refresh \
+    || echo "Warning: refreshing the container setup failed; Envelo itself is still updated."
 fi
 VERSION="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' /opt/envelo/package.json 2>/dev/null || true)"
+# On first install the service does not exist yet; the installer starts it.
+if systemctl cat envelo >/dev/null 2>&1; then
+  systemctl daemon-reload
+  systemctl restart envelo
+  # Make sure the new server is the one answering.
+  for _ in $(seq 1 15); do
+    if curl -fsS -o /dev/null "http://127.0.0.1:${PORT}/api/version" 2>/dev/null; then
+      echo "Envelo updated${VERSION:+ to $VERSION} and running."
+      exit 0
+    fi
+    sleep 1
+  done
+  echo "Envelo was updated but did not start. See: journalctl -u envelo -n 50" >&2
+  exit 1
+fi
 echo "Envelo updated${VERSION:+ to $VERSION}."
 UPDATER
   chmod +x /usr/local/bin/update.new

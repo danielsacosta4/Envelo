@@ -11,6 +11,15 @@ const http = require('node:http');
 const path = require('node:path');
 const { importActualZip } = require('./actual-import.js');
 
+// Version from package.json, shown by `update` and the app.
+const VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version || 'dev';
+  } catch {
+    return 'dev';
+  }
+})();
+
 const COOKIE = 'envelo_session';
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
@@ -253,6 +262,10 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
         persist();
       }
       return sendJson(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie('', 0) });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/version') {
+      return sendJson(res, 200, { version: VERSION });
     }
 
     if (req.method === 'GET' && pathname === '/api/me') {

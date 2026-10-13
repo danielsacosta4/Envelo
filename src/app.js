@@ -805,6 +805,10 @@
     render();
   }
 
+  fetch('/api/version').then((r) => r.json()).then((v) => {
+    $('#version').textContent = `Envelo ${v.version}`;
+  }).catch(() => {});
+
   // Start: restore the session if there is one.
   (async function boot() {
     try {

@@ -344,6 +344,7 @@ tr:not(.group) td { border-bottom: 1px solid var(--ink); }
 .report-table td.neg { color: var(--bad); }
 
 .import-hint { margin: 0; }
+.version { margin: 0; font-size: 11px; }
 .badge.off { background: var(--muted); }
 label.check { flex-direction: row !important; align-items: flex-start; gap: 8px !important; text-transform: none !important; letter-spacing: 0 !important; font: 600 13px/1.35 var(--sans) !important; color: var(--ink) !important; }
 label.check input { width: auto; margin-top: 2px; }
