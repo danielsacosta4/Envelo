@@ -284,3 +284,42 @@ tr:not(.group) td { border-bottom: 1px solid var(--ink); }
 .account .hint { overflow-wrap: anywhere; }
 .sync { margin: 0; min-height: 1.2em; }
 .sync-error { color: var(--bad) !important; font-weight: 700; }
+
+/* Phones */
+@media (max-width: 640px) {
+  input, select { font-size: 16px; } /* stops iOS zooming on focus */
+  .topbar { position: static; padding: 14px 16px 14px; gap: 8px 12px; }
+  .month-nav span { font-size: 28px; }
+  .ready .amount { font-size: 42px; }
+  .layout { padding: 12px; gap: 14px; }
+  .envelopes .panel-head .hint { display: none; }
+  .table-wrap { overflow: visible; }
+  table, tbody { display: block; width: 100%; }
+  thead { display: none; }
+  tr.group { display: block; }
+  tr.group td { display: block; }
+  tr:not(.group) {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--ink);
+  }
+  tr:not(.group) td { display: block; padding: 0; border: none; background: none; min-width: 0; }
+  tr:not(.group) .env-cell { grid-column: 1 / -1; }
+  tr:not(.group) td.num { text-align: left; font-size: 16px; }
+  tr:not(.group) td.num::before {
+    content: attr(data-label);
+    display: block;
+    font: 800 10px/1.6 var(--sans);
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  tr:not(.group) td.fund-cell { grid-column: 1 / -1; }
+  tr:not(.group) td.fund-cell:empty { display: none; }
+  tr:not(.group) td.fund-cell::before { content: none; }
+  td.num input { width: 100%; margin: 0; }
+  .avail { font-size: 17px; }
+  .auth-card { padding: 20px; }
+}

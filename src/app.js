@@ -138,12 +138,12 @@
           ? `<button type="button" class="fund" data-action="fund" data-id="${e.id}" data-amount="${e.needed}">Fund goal</button>`
           : '';
         rows.push(`<tr class="${tone}">
-          <td><div class="env-name">${esc(e.name)}${e.overspent ? '<span class="badge">Overspent</span>' : ''}</div>${goal}</td>
-          <td class="num"><input type="text" inputmode="decimal" aria-label="Assigned to ${esc(e.name)}"
+          <td class="env-cell"><div class="env-name">${esc(e.name)}${e.overspent ? '<span class="badge">Overspent</span>' : ''}</div>${goal}</td>
+          <td class="num" data-label="Assigned"><input type="text" inputmode="decimal" aria-label="Assigned to ${esc(e.name)}"
               value="${B.toInput(e.assigned)}" data-env="${e.id}"></td>
-          <td class="num">${esc(money(e.activity))}</td>
-          <td class="num"><span class="avail ${availClass}">${esc(money(e.available))}</span></td>
-          <td class="num">${fund}</td>
+          <td class="num" data-label="Spent">${esc(money(e.activity))}</td>
+          <td class="num" data-label="Available"><span class="avail ${availClass}">${esc(money(e.available))}</span></td>
+          <td class="num fund-cell">${fund}</td>
         </tr>`);
       }
     });
