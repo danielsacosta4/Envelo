@@ -21,7 +21,7 @@
   const monthOf = (date) => date.slice(0, 7);
 
   function create() {
-    return { version: 1, currency: 'USD', envelopes: [], transactions: [], assignments: {} };
+    return { version: 1, currency: 'EUR', envelopes: [], transactions: [], assignments: {} };
   }
 
   function addEnvelope(b, { name, group, goal }) {
@@ -184,7 +184,7 @@
     return neg ? -cents : cents;
   }
 
-  function formatMoney(cents, currency = 'USD') {
+  function formatMoney(cents, currency = 'EUR') {
     return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(cents / 100);
   }
 
@@ -199,7 +199,7 @@
     }
     return {
       version: 1,
-      currency: obj.currency || 'USD',
+      currency: obj.currency || 'EUR',
       envelopes: obj.envelopes,
       transactions: obj.transactions,
       assignments: obj.assignments,

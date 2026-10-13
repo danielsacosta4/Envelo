@@ -116,5 +116,5 @@ test('parseMoney handles common separators', () => {
 test('fromJSON rejects files that are not backups', () => {
   assert.throws(() => B.fromJSON({ foo: 1 }), /not an Envelo backup/);
   const ok = B.fromJSON({ envelopes: [], transactions: [], assignments: {} });
-  assert.equal(ok.currency, 'USD');
+  assert.equal(ok.currency, 'EUR');
 });
