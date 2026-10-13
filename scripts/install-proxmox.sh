@@ -170,7 +170,7 @@ echo "  Open in a browser:  http://$IP$PORT_SUFFIX"
 echo "  Create your account on that page, then start budgeting."
 echo
 echo "  Console:            pct enter $CTID   (logs in automatically)"
-echo "  Update Envelo:      pct exec $CTID -- /usr/local/bin/update"
+echo "  Update Envelo:      pct exec $CTID -- update   (or type update in the container)"
 echo "  Data:               /var/lib/envelo inside the container; include it in Proxmox backups"
 echo
 echo "  Traffic is plain HTTP. Put it behind HTTPS before using it outside your home network,"
