@@ -100,6 +100,13 @@
       </section>
 
       <section class="panel footer-actions">
+        <label>Theme
+          <select id="theme">
+            <option value="auto">Match device</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
         <label>Currency
           <select id="currency">
             <option>USD</option><option>EUR</option><option>GBP</option><option>BRL</option>
@@ -111,6 +118,8 @@
           <button type="button" data-action="import">Import backup</button>
           <input type="file" id="import-file" accept="application/json,.json" hidden>
         </div>
+        <button type="button" data-action="import-actual">Import from Actual Budget (CSV)</button>
+        <input type="file" id="import-actual-file" accept=".csv,text/csv" hidden>
         <button type="button" class="danger" data-action="reset">Erase all data</button>
       </section>
 

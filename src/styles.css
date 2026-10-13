@@ -13,7 +13,42 @@
   --good: #1f6b4a;
   --serif: Georgia, "Times New Roman", serif;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --primary-hover: #333;
   color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #121211;
+    --card: #1c1b19;
+    --ink: #f1ece2;
+    --muted: #a59e90;
+    --rule: #38352e;
+    --coral: #c9442a;
+    --coral-soft: #3e2520;
+    --mint: #1d3a2f;
+    --blue: #1e2b45;
+    --bad: #ff8a80;
+    --good: #7fd4a8;
+    --primary-hover: #d8d2c6;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper: #121211;
+  --card: #1c1b19;
+  --ink: #f1ece2;
+  --muted: #a59e90;
+  --rule: #38352e;
+  --coral: #c9442a;
+  --coral-soft: #3e2520;
+  --mint: #1d3a2f;
+  --blue: #1e2b45;
+  --bad: #ff8a80;
+  --good: #7fd4a8;
+  --primary-hover: #d8d2c6;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -39,7 +74,7 @@ button {
 }
 button:hover { background: var(--paper); }
 button.primary { background: var(--ink); color: var(--card); }
-button.primary:hover { background: #333; }
+button.primary:hover { background: var(--primary-hover); }
 button.ghost { border-color: transparent; background: transparent; color: var(--muted); }
 button.danger { color: var(--bad); }
 button.icon { border: none; background: none; padding: 2px 6px; color: var(--muted); font-size: 18px; }
@@ -187,7 +222,7 @@ tr:not(.group) td { border-bottom: 1px solid var(--ink); }
   letter-spacing: .1em;
   text-transform: uppercase;
   background: var(--bad);
-  color: #fff;
+  color: var(--card);
   vertical-align: middle;
 }
 .fund { font: 800 12px/1 var(--sans); padding: 6px 9px; }

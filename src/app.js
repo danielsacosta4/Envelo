@@ -12,6 +12,18 @@
   const thisMonth = () => todayISO().slice(0, 7);
   const money = (c) => B.formatMoney(c, budget.currency);
 
+  // Theme: a per-device preference, so it lives in this browser only.
+  const THEME_KEY = 'envelo.theme';
+  function readTheme() {
+    try { return localStorage.getItem(THEME_KEY) || 'auto'; } catch { return 'auto'; }
+  }
+  function applyTheme(theme) {
+    if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+    else delete document.documentElement.dataset.theme;
+    try { localStorage.setItem(THEME_KEY, theme); } catch { /* storage blocked: theme still applies now */ }
+  }
+  applyTheme(readTheme());
+
   let budget = B.create();
   let month = thisMonth();
   let account = null;
@@ -105,6 +117,7 @@
     const [y, m] = month.split('-').map(Number);
     $('#month-label').textContent = new Date(y, m - 1, 1).toLocaleString(undefined, { month: 'long', year: 'numeric' });
     $('#currency').value = budget.currency;
+    $('#theme').value = readTheme();
     $('#account').textContent = account ? account.email : '';
 
     const ready = $('#ready');
@@ -257,6 +270,7 @@
         break;
       case 'export': exportBackup(); break;
       case 'import': $('#import-file').click(); break;
+      case 'import-actual': $('#import-actual-file').click(); break;
       case 'logout': logout(); break;
       case 'reset':
         if (confirm('Erase every envelope and transaction on your account? Export a backup first if unsure.')) {
@@ -280,6 +294,11 @@
     } else if (t.id === 'currency') {
       budget.currency = t.value;
       attempt(() => {});
+    } else if (t.id === 'theme') {
+      applyTheme(t.value);
+    } else if (t.id === 'import-actual-file') {
+      importActual(t.files[0]);
+      t.value = '';
     } else if (t.id === 'import-file') {
       importBackup(t.files[0]);
       t.value = '';
@@ -362,6 +381,24 @@
       showError('');
       scheduleSave();
       render();
+    } catch (err) {
+      showError('Import failed: ' + err.message);
+    }
+  }
+
+  async function importActual(file) {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      let result;
+      const ok = attempt(() => { result = B.importTransactionsCsv(budget, text); });
+      if (!ok) return;
+      const parts = [`Imported ${result.imported} transactions (${result.income} income).`];
+      if (result.envelopesCreated) parts.push(`Created ${result.envelopesCreated} envelopes.`);
+      if (result.duplicates) parts.push(`Skipped ${result.duplicates} already imported.`);
+      if (result.skipped) parts.push(`Skipped ${result.skipped} transfers or uncategorized rows.`);
+      parts.push('Budgeted amounts are not in the export, so assign money to your envelopes now.');
+      alert(parts.join('\n'));
     } catch (err) {
       showError('Import failed: ' + err.message);
     }

@@ -206,10 +206,119 @@
     };
   }
 
+  // Minimal RFC 4180 CSV parser: quoted fields, escaped quotes, CRLF.
+  function parseCsv(text) {
+    const rows = [];
+    let row = [];
+    let field = '';
+    let quoted = false;
+    const src = String(text).replace(/^﻿/, '');
+    for (let i = 0; i < src.length; i++) {
+      const c = src[i];
+      if (quoted) {
+        if (c === '"' && src[i + 1] === '"') { field += '"'; i++; }
+        else if (c === '"') quoted = false;
+        else field += c;
+      } else if (c === '"') quoted = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && src[i + 1] === '\n') i++;
+        row.push(field); field = '';
+        if (row.some((f) => f !== '')) rows.push(row);
+        row = [];
+      } else field += c;
+    }
+    row.push(field);
+    if (row.some((f) => f !== '')) rows.push(row);
+    return rows;
+  }
+
+  const INCOME_CATEGORIES = ['income', 'to budget', 'ready to assign', 'inflow: ready to assign', 'starting balances'];
+
+  // Import transactions exported from Actual Budget (Account > Export) or any
+  // CSV with Date, Payee, Category, Amount columns. Optional: Notes, Category
+  // Group, Account, Inflow/Outflow (instead of Amount).
+  // Budgeted amounts are not part of the export, so assign money afterwards.
+  function importTransactionsCsv(b, text) {
+    const rows = parseCsv(text);
+    if (rows.length < 2) throw new Error('The file has no transactions.');
+    const head = rows[0].map((h) => h.trim().toLowerCase());
+    const col = (...names) => names.map((n) => head.indexOf(n)).find((i) => i >= 0) ?? -1;
+    const iDate = col('date');
+    const iPayee = col('payee');
+    const iNotes = col('notes', 'memo');
+    const iCat = col('category');
+    const iGroup = col('category group', 'category_group', 'group');
+    const iAmount = col('amount');
+    const iIn = col('inflow');
+    const iOut = col('outflow');
+    if (iDate < 0 || (iAmount < 0 && iIn < 0 && iOut < 0)) {
+      throw new Error('The CSV needs at least Date and Amount columns.');
+    }
+
+    const seen = new Set(b.transactions.map((t) => t.importKey).filter(Boolean));
+    const byName = new Map(b.envelopes.map((e) => [e.name.toLowerCase(), e]));
+    const result = { imported: 0, income: 0, duplicates: 0, skipped: 0, envelopesCreated: 0 };
+
+    for (const r of rows.slice(1)) {
+      const get = (i) => (i >= 0 && r[i] != null ? String(r[i]).trim() : '');
+      const date = normalizeDate(get(iDate));
+      let cents;
+      if (iAmount >= 0) cents = parseMoney(get(iAmount));
+      else cents = (parseMoney(get(iIn) || '0') || 0) - (parseMoney(get(iOut) || '0') || 0);
+      const payee = get(iPayee);
+      if (!date || Number.isNaN(cents) || cents === 0 || /^transfer\b/i.test(payee)) {
+        result.skipped++;
+        continue;
+      }
+      let category = get(iCat);
+      let group = get(iGroup);
+      // "Group: Category" in one column
+      if (!group && category.includes(':') && !INCOME_CATEGORIES.includes(category.toLowerCase())) {
+        const idx = category.indexOf(':');
+        group = category.slice(0, idx).trim();
+        category = category.slice(idx + 1).trim();
+      }
+      const notes = get(iNotes);
+      const key = [date, payee, cents, category, notes].join('|');
+      if (seen.has(key)) { result.duplicates++; continue; }
+
+      const isIncome = INCOME_CATEGORIES.includes(category.toLowerCase())
+        || group.toLowerCase() === 'income'
+        || (!category && cents > 0);
+      let envelopeId = null;
+      if (!isIncome) {
+        if (!category) { result.skipped++; continue; }
+        let env = byName.get(category.toLowerCase());
+        if (!env) {
+          env = addEnvelope(b, { name: category, group: group || 'Imported' });
+          byName.set(category.toLowerCase(), env);
+          result.envelopesCreated++;
+        }
+        envelopeId = env.id;
+      }
+      b.transactions.push({ id: newId(), date, payee, note: notes, amount: cents, envelopeId, importKey: key });
+      seen.add(key);
+      result.imported++;
+      if (isIncome) result.income++;
+    }
+    return result;
+  }
+
+  // Accepts YYYY-MM-DD, YYYY/MM/DD and DD/MM/YYYY.
+  function normalizeDate(text) {
+    let m = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    m = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+    if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+    return null;
+  }
+
   const api = {
     create, addEnvelope, removeEnvelope, addTransaction, removeTransaction,
     setAssigned, assignedIn, readyToAssign, envelopeStatus, monthView,
     shiftMonth, parseMoney, formatMoney, toInput, fromJSON,
+    parseCsv, importTransactionsCsv,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
