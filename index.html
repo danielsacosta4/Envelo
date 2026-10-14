@@ -29,6 +29,7 @@
       <button type="button" class="active" data-view="budget">Budget</button>
       <button type="button" data-view="accounts">Accounts</button>
       <button type="button" data-view="reports">Reports</button>
+      <button type="button" data-view="goals">Goals</button>
       <button type="button" data-view="loans">Loans</button>
     </nav>
     <nav class="month-nav" aria-label="Month">
@@ -258,6 +259,15 @@
     </section>
   </section>
 
+  <section id="view-goals" class="layout single" hidden>
+    <div class="report-toolbar">
+      <h2>Goals</h2>
+      <button type="button" class="primary" data-action="new-goal">New goal</button>
+    </div>
+    <p class="hint goals-help">Goals add up money across accounts, envelopes or your whole net worth, like "€10,000 emergency fund in savings and Trading 212". Progress uses the month shown above.</p>
+    <div id="goal-list" class="goal-list"></div>
+  </section>
+
   <section id="view-loans" class="layout single" hidden>
     <div class="report-toolbar">
       <h2>Loans</h2>
@@ -375,6 +385,29 @@
       <div class="row">
         <button type="submit" class="primary">Reconcile</button>
         <button type="button" data-action="close-reconcile">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="goal-dialog" class="target-dialog">
+    <form id="goal-form" class="stack" autocomplete="off">
+      <h2 id="goal-title">New goal</h2>
+      <p id="goal-error" class="auth-message" hidden></p>
+      <label>Name <input type="text" name="name" maxlength="60" required placeholder="Emergency fund"></label>
+      <label>Amount to reach <input type="text" name="amount" inputmode="decimal" required placeholder="10000.00"></label>
+      <label>By <span class="optional">(optional)</span> <input type="month" name="by"></label>
+      <label>Counts the money in
+        <select name="source">
+          <option value="accounts">Some accounts</option>
+          <option value="envelopes">Some envelopes</option>
+          <option value="networth">Everything (net worth)</option>
+        </select>
+      </label>
+      <fieldset class="pick-list" id="goal-picks"></fieldset>
+      <div class="row">
+        <button type="submit" class="primary">Save</button>
+        <button type="button" data-action="close-goal">Cancel</button>
+        <button type="button" class="danger" id="goal-delete" data-action="delete-goal">Delete goal</button>
       </div>
     </form>
   </dialog>

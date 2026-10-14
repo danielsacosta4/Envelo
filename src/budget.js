@@ -25,7 +25,7 @@
   };
 
   function create() {
-    return { version: 1, currency: 'EUR', accounts: [], envelopes: [], transactions: [], assignments: {}, recurring: [], hiddenGroups: [] };
+    return { version: 1, currency: 'EUR', accounts: [], envelopes: [], transactions: [], assignments: {}, recurring: [], hiddenGroups: [], goals: [] };
   }
 
   // Older budgets have no accounts. Put their transactions in one "Main account".
@@ -33,6 +33,7 @@
     if (!Array.isArray(b.accounts)) b.accounts = [];
     if (!Array.isArray(b.recurring)) b.recurring = [];
     if (!Array.isArray(b.hiddenGroups)) b.hiddenGroups = [];
+    if (!Array.isArray(b.goals)) b.goals = [];
     if (b.transactions.some((t) => !t.accountId)) {
       const main = b.accounts[0] || addAccount(b, { name: 'Main account' });
       for (const t of b.transactions) if (!t.accountId) t.accountId = main.id;
@@ -678,6 +679,7 @@
       accounts: Array.isArray(obj.accounts) ? obj.accounts : [],
       recurring: Array.isArray(obj.recurring) ? obj.recurring : [],
       hiddenGroups: Array.isArray(obj.hiddenGroups) ? obj.hiddenGroups : [],
+      goals: Array.isArray(obj.goals) ? obj.goals : [],
     });
   }
 
@@ -889,6 +891,95 @@
     return out;
   }
 
+  // Goals sit above envelopes: an amount to reach across some accounts, some
+  // envelopes, or your whole net worth, optionally by a month.
+  //   { id, name, amount, by: 'YYYY-MM' | null, source: 'accounts' | 'envelopes' | 'networth', ids: [], celebrated: 0 }
+  const GOAL_SOURCES = ['accounts', 'envelopes', 'networth'];
+  const MILESTONES = [25, 50, 75, 100];
+
+  function normalizeGoal(b, g) {
+    const name = String(g.name || '').trim();
+    if (!name) throw new Error('Give the goal a name.');
+    const amount = Number(g.amount);
+    if (!Number.isInteger(amount) || amount <= 0) throw new Error('The goal amount must be more than zero.');
+    const by = g.by || null;
+    if (by && !MONTH_RE.test(by)) throw new Error('The goal date must be a month.');
+    if (!GOAL_SOURCES.includes(g.source)) throw new Error('Choose what the goal tracks.');
+    const known = g.source === 'accounts' ? (b.accounts || []).map((a) => a.id)
+      : g.source === 'envelopes' ? b.envelopes.map((e) => e.id) : [];
+    const ids = g.source === 'networth' ? [] : [...new Set(g.ids || [])].filter((id) => known.includes(id));
+    if (g.source !== 'networth' && !ids.length) {
+      throw new Error(g.source === 'accounts' ? 'Pick at least one account.' : 'Pick at least one envelope.');
+    }
+    return { name, amount, by, source: g.source, ids };
+  }
+
+  function addGoal(b, g) {
+    if (!Array.isArray(b.goals)) b.goals = [];
+    const goal = { id: newId(), ...normalizeGoal(b, g), celebrated: 0, createdAt: todayISO() };
+    b.goals.push(goal);
+    return goal;
+  }
+
+  function updateGoal(b, id, g) {
+    const goal = (b.goals || []).find((x) => x.id === id);
+    if (!goal) throw new Error('Unknown goal.');
+    Object.assign(goal, normalizeGoal(b, g));
+    // A higher amount can un-reach milestones; let them be celebrated again.
+    goal.celebrated = Math.min(goal.celebrated || 0, goalStatus(b, goal, monthOf(todayISO())).milestone);
+    return goal;
+  }
+
+  function removeGoal(b, id) {
+    b.goals = (b.goals || []).filter((g) => g.id !== id);
+  }
+
+  // What the goal's money adds up to at the end of `month`.
+  function goalValue(b, goal, month) {
+    const end = monthEnd(month);
+    if (goal.source === 'envelopes') {
+      return goal.ids.reduce((sum, id) => (b.envelopes.some((e) => e.id === id) ? sum + envelopeStatus(b, id, month).available : sum), 0);
+    }
+    const ids = goal.source === 'accounts' ? new Set(goal.ids) : null;
+    let sum = 0;
+    for (const t of b.transactions) if (t.date <= end && (!ids || ids.has(t.accountId))) sum += t.amount;
+    return sum;
+  }
+
+  // Progress, history and a forecast for one goal, as of `month`.
+  function goalStatus(b, goal, month, historyMonths = 12) {
+    const months = [];
+    for (let k = historyMonths - 1; k >= 0; k--) months.push(shiftMonth(month, -k));
+    const history = months.map((m) => ({ month: m, value: goalValue(b, goal, m) }));
+    const value = history[history.length - 1].value;
+    const progress = Math.max(0, Math.min(1, value / goal.amount));
+    const remaining = Math.max(0, goal.amount - value);
+    // Average change over the last three months.
+    const back = history[Math.max(0, history.length - 4)].value;
+    const rate = Math.round((value - back) / Math.min(3, history.length - 1 || 1));
+    let eta = null;
+    if (remaining === 0) eta = month;
+    else if (rate > 0) eta = shiftMonth(month, Math.ceil(remaining / rate));
+    let monthsLeft = null;
+    let neededPerMonth = null;
+    let onTrack = null;
+    if (goal.by) {
+      const [y1, m1] = month.split('-').map(Number);
+      const [y2, m2] = goal.by.split('-').map(Number);
+      monthsLeft = (y2 - y1) * 12 + (m2 - m1);
+      neededPerMonth = remaining === 0 ? 0 : monthsLeft > 0 ? Math.ceil(remaining / monthsLeft) : remaining;
+      onTrack = remaining === 0 || (!!eta && eta <= goal.by);
+    }
+    const pct = progress * 100;
+    const milestone = MILESTONES.filter((m) => pct >= m).pop() || 0;
+    // First month in the history each milestone was reached.
+    const reached = MILESTONES.map((m) => {
+      const hit = history.find((h) => h.value >= (goal.amount * m) / 100);
+      return { percent: m, month: pct >= m ? (hit ? hit.month : month) : null };
+    });
+    return { value, progress, remaining, rate, eta, monthsLeft, neededPerMonth, onTrack, milestone, milestones: reached, history };
+  }
+
   const api = {
     create, addEnvelope, removeEnvelope, addTransaction, removeTransaction,
     setAssigned, assignedIn, readyToAssign, envelopeStatus, monthView,
@@ -900,6 +991,7 @@
     addRecurring, removeRecurring, applyRecurring, nextRecurringDate, report,
     netWorthSeries, groupSpending, monthForecast, targetForecasts,
     parseCsv, importTransactionsCsv,
+    addGoal, updateGoal, removeGoal, goalValue, goalStatus,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

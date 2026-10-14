@@ -165,8 +165,8 @@
   }
 
   // Lines over time with a crosshair. series: [{ name, color, values }]
-  function lines(container, { labels, series, fmt, fmtAxis, label }) {
-    const f = frame(container, { label });
+  function lines(container, { labels, series, fmt, fmtAxis, label, height }) {
+    const f = frame(container, { label, height });
     const all = series.flatMap((s) => s.values);
     const sc = scale(Math.min(0, ...all), Math.max(0, ...all));
     const g = el('g', {}, f.svg);

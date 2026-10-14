@@ -477,3 +477,38 @@ test('a brand-new budget has every list the app reads', () => {
   for (const key of ['accounts', 'envelopes', 'transactions', 'recurring', 'hiddenGroups']) assert.ok(Array.isArray(b[key]), key);
   assert.deepEqual(B.monthView(b, '2026-10').groups, []);
 });
+
+test('goals track accounts, envelopes or net worth', () => {
+  const b = B.create();
+  const checking = B.addAccount(b, { name: 'Checking', balance: 100000, date: '2026-08-01' });
+  const savings = B.addAccount(b, { name: 'Savings', balance: 200000, date: '2026-08-01', offBudget: true });
+  const fund = B.addEnvelope(b, { name: 'Emergency', group: 'Savings' });
+  B.setAssigned(b, '2026-08', fund.id, 30000);
+  B.setAssigned(b, '2026-09', fund.id, 30000);
+  B.setAssigned(b, '2026-10', fund.id, 30000);
+  const g1 = B.addGoal(b, { name: 'Cushion', amount: 400000, source: 'accounts', ids: [savings.id] });
+  const g2 = B.addGoal(b, { name: 'Emergency', amount: 180000, source: 'envelopes', ids: [fund.id], by: '2027-01' });
+  const g3 = B.addGoal(b, { name: 'Worth', amount: 600000, source: 'networth' });
+  const s1 = B.goalStatus(b, g1, '2026-10');
+  assert.equal(s1.value, 200000);
+  assert.equal(s1.milestone, 50);
+  const s2 = B.goalStatus(b, g2, '2026-10');
+  assert.equal(s2.value, 90000);
+  assert.equal(s2.rate, 30000);
+  assert.equal(s2.eta, '2027-01');
+  assert.equal(s2.neededPerMonth, 30000);
+  assert.equal(s2.onTrack, true);
+  assert.equal(s2.milestones.find((m) => m.percent === 25).month, '2026-09');
+  assert.equal(B.goalStatus(b, g3, '2026-10').value, 300000);
+  assert.ok(checking);
+});
+
+test('goals are validated and survive a reload', () => {
+  const b = B.create();
+  assert.throws(() => B.addGoal(b, { name: '', amount: 100, source: 'networth' }), /name/);
+  assert.throws(() => B.addGoal(b, { name: 'X', amount: 100, source: 'accounts', ids: [] }), /account/);
+  B.addGoal(b, { name: 'House', amount: 5000000, source: 'networth', by: '2030-01' });
+  const copy = B.fromJSON(JSON.parse(JSON.stringify(b)));
+  assert.equal(copy.goals.length, 1);
+  assert.equal(copy.goals[0].by, '2030-01');
+});

@@ -436,7 +436,7 @@
     renderAccounts();
     renderRecurring();
     if (currentView === 'account' && !budget.accounts.some((a) => a.id === openAccountId)) currentView = 'accounts';
-    for (const v of ['budget', 'accounts', 'account', 'reports', 'loans']) $(`#view-${v}`).hidden = v !== currentView;
+    for (const v of ['budget', 'accounts', 'account', 'reports', 'loans', 'goals']) $(`#view-${v}`).hidden = v !== currentView;
     const tab = currentView === 'account' ? 'accounts' : currentView;
     document.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === tab));
     // The transaction form lives on the budget page and on an account page.
@@ -445,6 +445,7 @@
     if (currentView === 'account') renderAccountPage();
     if (currentView === 'reports') renderReport();
     if (currentView === 'loans') renderLoans();
+    if (currentView === 'goals') renderGoals();
   }
 
   const accountName = (id) => (budget.accounts.find((a) => a.id === id) || {}).name || 'Unknown account';
@@ -640,6 +641,7 @@
     resizeTimer = setTimeout(() => {
       if (currentView === 'reports') renderReport();
       if (currentView === 'loans') renderLoans();
+      if (currentView === 'goals') renderGoals();
     }, 150);
   });
 
@@ -874,6 +876,17 @@
         render();
         window.scrollTo(0, 0);
         break;
+      case 'new-goal': openGoal(null); break;
+      case 'edit-goal': openGoal(btn.dataset.id); break;
+      case 'close-goal': $('#goal-dialog').close(); break;
+      case 'delete-goal': {
+        const g = (budget.goals || []).find((x) => x.id === editingGoal);
+        if (g && confirm(`Delete the goal "${g.name}"? Your money is not touched.`)) {
+          $('#goal-dialog').close();
+          attempt(() => B.removeGoal(budget, g.id));
+        }
+        break;
+      }
       case 'new-loan': openLoan(null); break;
       case 'edit-loan': openLoan(btn.dataset.id); break;
       case 'close-loan': $('#loan-dialog').close(); break;
@@ -1150,6 +1163,133 @@
   // Default the date field to today and sync the type toggle on load.
   $('#tx-form').date.value = todayISO();
   syncKind();
+
+  // Goals
+
+  function goalSourceText(g) {
+    if (g.source === 'networth') return 'Net worth';
+    const list = g.source === 'accounts' ? budget.accounts : budget.envelopes;
+    const names = g.ids.map((id) => (list.find((x) => x.id === id) || {}).name).filter(Boolean);
+    return names.length > 3 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', ');
+  }
+
+  function renderGoals() {
+    const goals = budget.goals || [];
+    const statuses = goals.map((g) => [g, B.goalStatus(budget, g, month)]);
+    $('#goal-list').innerHTML = goals.length ? statuses.map(([g, st]) => {
+      const pct = Math.round(st.progress * 100);
+      const done = st.remaining === 0;
+      const forecast = done ? '<p class="status good">🎉 Reached!</p>'
+        : g.by ? `<p>${st.onTrack ? '<span class="status good">✓ On track</span>' : '<span class="status bad">⚠ Behind</span>'}
+            Put aside <b>${esc(money(st.neededPerMonth))}</b> a month to reach it by ${esc(fmtMonth(g.by))}.
+            ${st.eta ? `At your recent pace (${esc(money(st.rate))}/month) you get there around <b>${esc(fmtMonth(st.eta))}</b>.` : 'It has not grown in the last 3 months.'}</p>`
+        : st.eta ? `<p>Growing ${esc(money(st.rate))} a month: you get there around <b>${esc(fmtMonth(st.eta))}</b>.</p>`
+        : '<p>It has not grown in the last 3 months. Add money to reach it.</p>';
+      const ticks = [25, 50, 75].map((m) => `<span class="tick ${pct >= m ? 'hit' : ''}" style="left:${m}%"></span>`).join('');
+      const stones = st.milestones.map((m) => `<li class="${m.month ? 'hit' : ''}"><b>${m.percent}%</b>
+        <span>${m.month ? esc(fmtMonth(m.month)) : esc(money(Math.round((g.amount * m.percent) / 100)))}</span></li>`).join('');
+      return `<article class="panel goal-card ${done ? 'done' : ''}">
+        <header class="loan-head">
+          <h3>${esc(g.name)}</h3>
+          <button type="button" class="icon-text" data-action="edit-goal" data-id="${g.id}">Edit</button>
+        </header>
+        <div class="hint">${esc(goalSourceText(g))}${g.by ? ` · by ${esc(fmtMonth(g.by))}` : ''}</div>
+        <div class="goal-top">
+          <div class="goal-pct">${pct}<small>%</small></div>
+          <div class="goal-amounts"><b>${esc(money(st.value))}</b> of ${esc(money(g.amount))}
+            ${done ? '' : `<div class="hint">${esc(money(st.remaining))} to go</div>`}</div>
+        </div>
+        <div class="goal-bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(g.name)} progress">
+          <i style="width:${pct}%"></i>${ticks}</div>
+        <ol class="milestones">${stones}</ol>
+        <div class="goal-forecast">${forecast}</div>
+        <div class="chart goal-chart" id="goal-chart-${g.id}"></div>
+      </article>`;
+    }).join('') : `<section class="panel"><p class="empty">No goals yet. Use "New goal" to set one, such as an emergency fund
+      across your savings accounts or a net worth you want to reach.</p></section>`;
+
+    for (const [g, st] of statuses) {
+      const el = document.getElementById(`goal-chart-${g.id}`);
+      Charts.lines(el, {
+        labels: st.history.map((h) => fmtMonth(h.month).split(' ')[0]),
+        series: [
+          { name: 'Saved', color: seriesColor(2), values: st.history.map((h) => h.value) },
+          { name: 'Goal', color: seriesColor(6), values: st.history.map(() => g.amount) },
+        ],
+        fmt: money, fmtAxis: compact, label: `${g.name} over the last 12 months`, height: 170,
+      });
+    }
+
+    // Celebrate each milestone once, the first time it is seen this month or later.
+    if (month >= thisMonth()) {
+      const fresh = statuses.filter(([g, st]) => st.milestone > (g.celebrated || 0));
+      if (fresh.length) {
+        const [g, st] = fresh[0];
+        for (const [goal, s2] of fresh) goal.celebrated = s2.milestone;
+        scheduleSave();
+        celebrate(st.milestone === 100 ? `🎉 You reached ${g.name}!` : `🎉 ${g.name} is ${st.milestone}% there`);
+      }
+    }
+  }
+
+  let editingGoal = null;
+  function renderGoalPicks(selected = []) {
+    const f = $('#goal-form');
+    const source = f.source.value;
+    const box = $('#goal-picks');
+    if (source === 'networth') {
+      box.hidden = true;
+      box.innerHTML = '';
+      return;
+    }
+    box.hidden = false;
+    const items = source === 'accounts'
+      ? budget.accounts.map((a) => ({ id: a.id, label: a.name, sub: money(B.accountBalance(budget, a.id)) }))
+      : budget.envelopes.filter((e) => !B.isHidden(budget, e) || selected.includes(e.id)).map((e) => ({ id: e.id, label: e.name, sub: e.group }));
+    box.innerHTML = `<legend>${source === 'accounts' ? 'Accounts' : 'Envelopes'}</legend>${items.length ? items.map((it) => `<label class="check">
+      <input type="checkbox" name="pick" value="${it.id}" ${selected.includes(it.id) ? 'checked' : ''}>
+      <span>${esc(it.label)} <span class="optional">${esc(it.sub)}</span></span></label>`).join('') : '<p class="hint">None yet.</p>'}`;
+  }
+  $('#goal-form').source.addEventListener('change', () => renderGoalPicks());
+
+  function openGoal(id) {
+    const g = id && (budget.goals || []).find((x) => x.id === id);
+    editingGoal = g ? g.id : null;
+    const f = $('#goal-form');
+    f.reset();
+    $('#goal-error').hidden = true;
+    $('#goal-title').textContent = g ? g.name : 'New goal';
+    $('#goal-delete').hidden = !g;
+    f.name.value = g ? g.name : '';
+    f.amount.value = g ? B.toInput(g.amount) : '';
+    f.by.value = g && g.by ? g.by : '';
+    f.source.value = g ? g.source : 'accounts';
+    renderGoalPicks(g ? g.ids : []);
+    $('#goal-dialog').showModal();
+  }
+
+  $('#goal-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    const fields = {
+      name: f.name.value,
+      amount: B.parseMoney(f.amount.value),
+      by: f.by.value || null,
+      source: f.source.value,
+      ids: [...f.querySelectorAll('input[name=pick]:checked')].map((i) => i.value),
+    };
+    try {
+      if (Number.isNaN(fields.amount)) throw new Error('Enter an amount like 10000.00.');
+      if (editingGoal) B.updateGoal(budget, editingGoal, fields);
+      else B.addGoal(budget, fields);
+    } catch (err) {
+      $('#goal-error').textContent = err.message;
+      $('#goal-error').hidden = false;
+      return;
+    }
+    $('#goal-dialog').close();
+    attempt(() => {});
+  });
 
   // Loans: off-budget accounts with loan details, plus a calculator.
 
