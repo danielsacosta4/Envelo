@@ -10,6 +10,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const { importActualZip } = require('./actual-import.js');
+const Budget = require('../src/budget.js');
 
 // Version from package.json, shown by `update` and the app.
 const VERSION = (() => {
@@ -28,6 +29,8 @@ const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 10;
 const BACKUPS_KEPT = 14;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const HEARTBEAT_MS = 25 * 1000;
+const SHARE_ROLES = ['view', 'edit'];
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -82,7 +85,73 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
   const db = fs.existsSync(dbFile)
     ? JSON.parse(fs.readFileSync(dbFile, 'utf8'))
     : { users: {}, budgets: {}, sessions: {} };
+  if (!Array.isArray(db.shares)) db.shares = [];
   const failures = new Map(); // ip -> { count, since }
+
+  // Live updates: every open tab keeps an event stream; a save is announced
+  // to the owner's other tabs and to everyone the budget is shared with.
+  const streams = new Map(); // email -> Set of responses
+  function notify(email, event, data) {
+    for (const res of streams.get(email) || []) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  }
+  function announceBudget(owner, revision, clientId) {
+    notify(owner, 'budget', { revision, clientId: clientId || null });
+    for (const sh of db.shares) if (sh.owner === owner) notify(sh.member, 'shared', { shareId: sh.id });
+  }
+  const heartbeat = setInterval(() => {
+    for (const set of streams.values()) for (const res of set) res.write(': keep-alive\n\n');
+  }, HEARTBEAT_MS);
+  heartbeat.unref();
+
+  // Sharing: an owner shares some envelopes with another user, who can view
+  // them or also add spending to them. The owner's Ready to Assign pays for
+  // them; only the owner assigns money.
+  const shareById = (id) => db.shares.find((sh) => sh.id === id);
+  function shareOut(sh) {
+    return { id: sh.id, owner: sh.owner, member: sh.member, role: sh.role, envelopeIds: sh.envelopeIds, createdAt: sh.createdAt };
+  }
+  function ownerBudget(owner) {
+    const record = db.budgets[owner];
+    if (!record || !record.budget) throw new HttpError(404, 'The shared budget no longer exists.');
+    return { record, budget: Budget.fromJSON(record.budget) };
+  }
+  // What a member may see: the shared envelopes, their assignments and their
+  // transactions, plus the owner's on-budget accounts to pay from.
+  function sharedView(sh) {
+    const { record, budget } = ownerBudget(sh.owner);
+    const ids = new Set(sh.envelopeIds.filter((id) => budget.envelopes.some((e) => e.id === id)));
+    const assignments = {};
+    for (const [month, byEnv] of Object.entries(budget.assignments)) {
+      for (const [envId, cents] of Object.entries(byEnv)) {
+        if (ids.has(envId)) (assignments[month] = assignments[month] || {})[envId] = cents;
+      }
+    }
+    return {
+      share: shareOut(sh),
+      revision: record.revision || 0,
+      budget: {
+        version: 1,
+        currency: budget.currency,
+        envelopes: budget.envelopes.filter((e) => ids.has(e.id)).map((e) => ({ ...e, hidden: false })),
+        transactions: budget.transactions.filter((t) => ids.has(t.envelopeId)).map((t) => ({
+          id: t.id, date: t.date, payee: t.payee, note: t.note, amount: t.amount,
+          envelopeId: t.envelopeId, accountId: t.accountId, createdBy: t.createdBy || sh.owner,
+        })),
+        assignments,
+        accounts: budget.accounts.filter((a) => !a.offBudget).map((a) => ({ id: a.id, name: a.name, offBudget: false })),
+        recurring: [],
+        hiddenGroups: [],
+      },
+    };
+  }
+  function saveOwnerBudget(owner, budget, clientId) {
+    const record = db.budgets[owner];
+    const revision = (record.revision || 0) + 1;
+    db.budgets[owner] = { budget, savedAt: new Date().toISOString(), revision };
+    persist();
+    announceBudget(owner, revision, clientId);
+    return revision;
+  }
 
   function persist() {
     const now = Date.now();
@@ -304,7 +373,113 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
       const revision = currentRevision + 1;
       db.budgets[user.email] = { budget, savedAt, revision };
       persist();
+      announceBudget(user.email, revision, req.headers['x-client-id']);
       return sendJson(res, 200, { savedAt, revision });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/events') {
+      const user = requireUser(req);
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-store',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        ...SECURITY_HEADERS,
+      });
+      res.write('retry: 3000\n\n');
+      if (!streams.has(user.email)) streams.set(user.email, new Set());
+      streams.get(user.email).add(res);
+      req.on('close', () => {
+        const set = streams.get(user.email);
+        if (set) {
+          set.delete(res);
+          if (!set.size) streams.delete(user.email);
+        }
+      });
+      return undefined;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/shares') {
+      const user = requireUser(req);
+      return sendJson(res, 200, {
+        outgoing: db.shares.filter((sh) => sh.owner === user.email).map(shareOut),
+        incoming: db.shares.filter((sh) => sh.member === user.email).map(shareOut),
+      });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/shares') {
+      const user = requireUser(req);
+      const body = await readJson(req);
+      const member = String(body?.member || '').trim().toLowerCase();
+      if (!EMAIL_RE.test(member) || member.length > 254) throw new HttpError(400, 'Enter the email address of the person to share with.');
+      if (member === user.email) throw new HttpError(400, 'You cannot share with yourself.');
+      const role = SHARE_ROLES.includes(body?.role) ? body.role : 'view';
+      const { budget } = ownerBudget(user.email);
+      const envelopeIds = [...new Set(Array.isArray(body?.envelopeIds) ? body.envelopeIds : [])]
+        .filter((id) => budget.envelopes.some((e) => e.id === id));
+      if (!envelopeIds.length) throw new HttpError(400, 'Pick at least one envelope to share.');
+      // One share per person: sharing again updates it.
+      let sh = db.shares.find((x) => x.owner === user.email && x.member === member);
+      if (sh) Object.assign(sh, { role, envelopeIds });
+      else {
+        sh = { id: crypto.randomUUID(), owner: user.email, member, role, envelopeIds, createdAt: new Date().toISOString() };
+        db.shares.push(sh);
+      }
+      persist();
+      notify(member, 'shared', { shareId: sh.id });
+      return sendJson(res, 200, { share: shareOut(sh), registered: !!db.users[member] });
+    }
+
+    const shareMatch = pathname.match(/^\/api\/shares\/([\w-]+)$/);
+    if (shareMatch && req.method === 'DELETE') {
+      const user = requireUser(req);
+      const sh = shareById(shareMatch[1]);
+      // The owner can stop sharing; the member can leave.
+      if (!sh || (sh.owner !== user.email && sh.member !== user.email)) throw new HttpError(404, 'Not found.');
+      db.shares = db.shares.filter((x) => x !== sh);
+      persist();
+      notify(sh.member, 'shared', { shareId: sh.id, removed: true });
+      return sendJson(res, 200, { ok: true });
+    }
+
+    const sharedMatch = pathname.match(/^\/api\/shared\/([\w-]+)(\/transactions(?:\/([\w:-]+))?)?$/);
+    if (sharedMatch) {
+      const user = requireUser(req);
+      const sh = shareById(sharedMatch[1]);
+      if (!sh || sh.member !== user.email) throw new HttpError(404, 'Not found.');
+      if (req.method === 'GET' && !sharedMatch[2]) return sendJson(res, 200, sharedView(sh));
+      if (sh.role !== 'edit') throw new HttpError(403, 'You can only view these envelopes.');
+      const { budget } = ownerBudget(sh.owner);
+      const clientId = req.headers['x-client-id'];
+
+      if (req.method === 'POST' && sharedMatch[2] && !sharedMatch[3]) {
+        const body = await readJson(req);
+        if (!sh.envelopeIds.includes(body?.envelopeId)) throw new HttpError(400, 'Pick one of the shared envelopes.');
+        if (!budget.accounts.some((a) => a.id === body?.accountId && !a.offBudget)) throw new HttpError(400, 'Pick an account.');
+        let tx;
+        try {
+          tx = Budget.addTransaction(budget, {
+            kind: 'spend', date: body.date, payee: String(body.payee || '').slice(0, 80), note: String(body.note || '').slice(0, 140),
+            amount: Number(body.amount), envelopeId: body.envelopeId, accountId: body.accountId,
+          });
+        } catch (err) {
+          throw new HttpError(400, err.message);
+        }
+        tx.createdBy = user.email;
+        saveOwnerBudget(sh.owner, budget, clientId);
+        return sendJson(res, 201, sharedView(sh));
+      }
+
+      if (req.method === 'DELETE' && sharedMatch[3]) {
+        const tx = budget.transactions.find((t) => t.id === sharedMatch[3]);
+        if (!tx || !sh.envelopeIds.includes(tx.envelopeId) || tx.createdBy !== user.email) {
+          throw new HttpError(403, 'You can only delete spending you added.');
+        }
+        Budget.removeTransaction(budget, tx.id);
+        saveOwnerBudget(sh.owner, budget, clientId);
+        return sendJson(res, 200, sharedView(sh));
+      }
+      throw new HttpError(404, 'Not found.');
     }
 
     if (req.method === 'POST' && pathname === '/api/import/actual') {
@@ -373,6 +548,7 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
     }
   });
 
+  server.on('close', () => clearInterval(heartbeat));
   return server;
 }
 

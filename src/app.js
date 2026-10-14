@@ -45,11 +45,14 @@
 
   // API
 
+  // Identifies this tab, so it can ignore live updates about its own saves.
+  const clientId = (globalThis.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+
   async function api(method, url, body, extraHeaders = {}) {
     const res = await fetch(url, {
       method,
       credentials: 'same-origin',
-      headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...extraHeaders },
+      headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), 'X-Client-Id': clientId, ...extraHeaders },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await res.text();
@@ -367,7 +370,7 @@
           ? '<span class="fund fund-done">✓ Funded</span>'
           : '';
     return `<tr class="${tone}${isCollapsed ? ' is-collapsed' : ''}" data-env-row="${e.id}">
-      <td class="env-cell"><div class="env-name"><button type="button" class="env-link" data-action="edit-target" data-id="${e.id}" title="Edit envelope and target">${esc(e.name)}</button>${e.overspent ? '<span class="badge">Overspent</span>' : ''}</div>${goal}</td>
+      <td class="env-cell"><div class="env-name"><button type="button" class="env-link" data-action="edit-target" data-id="${e.id}" title="Edit envelope and target">${esc(e.name)}</button>${e.overspent ? '<span class="badge">Overspent</span>' : ''}${sharedEnvelopeIds().has(e.id) ? '<span class="badge shared" title="Shared with someone">Shared</span>' : ''}</div>${goal}</td>
       <td class="num" data-label="Assigned"><input type="text" inputmode="decimal" class="${state}" aria-label="Assigned to ${esc(e.name)}"
           value="${B.toInput(e.assigned)}" data-env="${e.id}"></td>
       <td class="num" data-label="Spent">${esc(money(e.activity))}</td>
@@ -436,7 +439,7 @@
     renderAccounts();
     renderRecurring();
     if (currentView === 'account' && !budget.accounts.some((a) => a.id === openAccountId)) currentView = 'accounts';
-    for (const v of ['budget', 'accounts', 'account', 'reports', 'loans', 'goals']) $(`#view-${v}`).hidden = v !== currentView;
+    for (const v of ['budget', 'accounts', 'account', 'reports', 'loans', 'goals', 'shared']) $(`#view-${v}`).hidden = v !== currentView;
     const tab = currentView === 'account' ? 'accounts' : currentView;
     document.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === tab));
     // The transaction form lives on the budget page and on an account page.
@@ -446,6 +449,8 @@
     if (currentView === 'reports') renderReport();
     if (currentView === 'loans') renderLoans();
     if (currentView === 'goals') renderGoals();
+    if (currentView === 'shared') renderShared();
+    renderShareList();
   }
 
   const accountName = (id) => (budget.accounts.find((a) => a.id === id) || {}).name || 'Unknown account';
@@ -707,7 +712,7 @@
       const label = t.payee || (t.envelopeId ? 'Spending' : 'Income');
       const acct = budget.accounts.length > 1 ? ` · ${esc(accountName(t.accountId))}` : '';
       return `<li>
-        <div class="tx-meta">${esc(t.date)} · ${esc(where)}${acct}${t.note ? ' · ' + esc(t.note) : ''}${t.reconciled ? ' · ✓' : ''}</div>
+        <div class="tx-meta">${esc(t.date)} · ${esc(where)}${acct}${t.createdBy && account && t.createdBy !== account.email ? ` · by ${esc(t.createdBy)}` : ''}${t.note ? ' · ' + esc(t.note) : ''}${t.reconciled ? ' · ✓' : ''}</div>
         <div><button type="button" class="env-link" data-action="edit-tx" data-id="${t.id}">${esc(label)}</button></div>
         <div class="tx-amt ${t.amount > 0 ? 'in' : ''}">${t.amount > 0 ? '+' : ''}${esc(money(t.amount))}</div>
         <button type="button" class="icon tx-del" data-action="delete-tx" data-id="${t.id}" aria-label="Delete transaction">&times;</button>
@@ -719,6 +724,9 @@
 
   function showAuth(message = '') {
     account = null;
+    stopLive();
+    shares = { outgoing: [], incoming: [] };
+    $('#nav-shared').hidden = true;
     budget = B.create();
     $('#app').hidden = true;
     $('#auth').hidden = false;
@@ -731,6 +739,8 @@
     $('#auth').hidden = true;
     $('#app').hidden = false;
     render();
+    startLive();
+    loadShares();
   }
 
   let authMode = 'login';
@@ -875,6 +885,31 @@
         if (!editingTx) $('#tx-account').value = openAccountId;
         render();
         window.scrollTo(0, 0);
+        break;
+      case 'new-share': flush(); openShare(null); break;
+      case 'edit-share': openShare(btn.dataset.id); break;
+      case 'close-share': $('#share-dialog').close(); break;
+      case 'stop-share': {
+        const sh = shares.outgoing.find((x) => x.id === editingShare);
+        if (sh && confirm(`Stop sharing with ${sh.member}? Spending they added stays in your budget.`)) {
+          api('DELETE', `/api/shares/${sh.id}`).then(() => { $('#share-dialog').close(); loadShares(); })
+            .catch((e) => { $('#share-error').textContent = e.message; $('#share-error').hidden = false; });
+        }
+        break;
+      }
+      case 'leave-share': {
+        const sh = shares.incoming.find((x) => x.id === btn.dataset.id);
+        if (sh && confirm(`Leave the envelopes ${sh.owner} shared with you?`)) {
+          api('DELETE', `/api/shares/${sh.id}`).then(loadShares).catch((e) => showError(e.message));
+        }
+        break;
+      }
+      case 'delete-shared-tx':
+        if (confirm('Delete this spending?')) {
+          api('DELETE', `/api/shared/${btn.dataset.share}/transactions/${btn.dataset.id}`)
+            .then((res) => { sharedData[btn.dataset.share] = { ...res, budget: B.fromJSON(res.budget) }; render(); })
+            .catch((e) => showError(e.message));
+        }
         break;
       case 'new-goal': openGoal(null); break;
       case 'edit-goal': openGoal(btn.dataset.id); break;
@@ -1040,17 +1075,7 @@
       return;
     }
     // Coming back to the tab: pick up changes made on other devices.
-    if (!account || dirty || inFlight) return;
-    try {
-      const res = await api('GET', '/api/budget');
-      if ((res.revision || 0) !== revision) {
-        budget = res.budget ? B.fromJSON(res.budget) : B.create();
-        revision = res.revision || 0;
-        render();
-      }
-    } catch {
-      // Offline or signed out: keep what is on screen.
-    }
+    reloadFromServer();
   });
 
   document.querySelectorAll('input[name="kind"]').forEach((r) => r.addEventListener('change', syncKind));
@@ -1163,6 +1188,234 @@
   // Default the date field to today and sync the type toggle on load.
   $('#tx-form').date.value = todayISO();
   syncKind();
+
+  // Live updates. The server announces every save; this tab then loads the
+  // new version, unless it has unsaved changes of its own (its save will be
+  // refused and it reloads then) or someone is typing or has a dialog open
+  // (it waits until they finish).
+
+  let events = null;
+  let reloadTimer = null;
+  function busy() {
+    const a = document.activeElement;
+    if (a && a.closest('#app') && a.matches('input, select, textarea')) return true;
+    return !!document.querySelector('dialog[open]');
+  }
+  async function reloadFromServer() {
+    clearTimeout(reloadTimer);
+    if (!account || dirty || inFlight || saveTimer) return;
+    if (busy()) {
+      reloadTimer = setTimeout(reloadFromServer, 1500);
+      return;
+    }
+    try {
+      const res = await api('GET', '/api/budget');
+      if ((res.revision || 0) !== revision && !dirty && !inFlight) {
+        budget = res.budget ? B.fromJSON(res.budget) : B.create();
+        revision = res.revision || 0;
+        render();
+        setSync(`Updated from another device at ${new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`);
+      }
+    } catch {
+      // Offline or signed out: keep what is on screen.
+    }
+  }
+  function startLive() {
+    if (events || !window.EventSource) return;
+    events = new EventSource('/api/events');
+    events.addEventListener('budget', (ev) => {
+      let d = {};
+      try { d = JSON.parse(ev.data); } catch { /* ignore */ }
+      if (d.clientId === clientId || d.revision === revision) return;
+      reloadFromServer();
+    });
+    events.addEventListener('shared', () => sharesSoon());
+    // Reconnecting after the server restarts can miss an update.
+    events.addEventListener('open', () => { if (account) reloadFromServer(); });
+  }
+  let sharesTimer = null;
+  function sharesSoon() {
+    clearTimeout(sharesTimer);
+    sharesTimer = setTimeout(() => (busy() ? sharesSoon() : loadShares()), busy() ? 1500 : 0);
+  }
+  function stopLive() {
+    if (events) events.close();
+    events = null;
+  }
+
+  // Sharing
+
+  let shares = { outgoing: [], incoming: [] };
+  const sharedData = {}; // share id -> { share, budget, revision }
+
+  async function loadShares() {
+    if (!account) return;
+    try {
+      shares = await api('GET', '/api/shares');
+    } catch {
+      return;
+    }
+    await Promise.all(shares.incoming.map(async (sh) => {
+      try {
+        const res = await api('GET', `/api/shared/${sh.id}`);
+        sharedData[sh.id] = { ...res, budget: B.fromJSON(res.budget) };
+      } catch {
+        delete sharedData[sh.id];
+      }
+    }));
+    for (const id of Object.keys(sharedData)) if (!shares.incoming.some((sh) => sh.id === id)) delete sharedData[id];
+    $('#nav-shared').hidden = !shares.incoming.length;
+    if (currentView === 'shared' && !shares.incoming.length) currentView = 'budget';
+    render();
+  }
+
+  const sharedEnvelopeIds = () => new Set(shares.outgoing.flatMap((sh) => sh.envelopeIds));
+
+  function renderShareList() {
+    const names = Object.fromEntries(budget.envelopes.map((e) => [e.id, e.name]));
+    $('#share-list').innerHTML = shares.outgoing.map((sh) => {
+      const envs = sh.envelopeIds.map((id) => names[id]).filter(Boolean);
+      return `<li>
+        <div class="tx-meta">${sh.role === 'edit' ? 'Can add spending' : 'Can see'} · ${envs.length} envelope${envs.length === 1 ? '' : 's'}</div>
+        <div><button type="button" class="env-link" data-action="edit-share" data-id="${sh.id}">${esc(sh.member)}</button></div>
+        <div class="tx-meta share-envs">${esc(envs.join(', '))}</div>
+      </li>`;
+    }).join('');
+  }
+
+  let editingShare = null;
+  function openShare(id) {
+    const sh = id && shares.outgoing.find((x) => x.id === id);
+    editingShare = sh ? sh.id : null;
+    const f = $('#share-form');
+    f.reset();
+    $('#share-error').hidden = true;
+    $('#share-title').textContent = sh ? `Shared with ${sh.member}` : 'Share envelopes';
+    f.member.value = sh ? sh.member : '';
+    f.member.readOnly = !!sh;
+    f.role.value = sh ? sh.role : 'view';
+    $('#share-stop').hidden = !sh;
+    const picked = new Set(sh ? sh.envelopeIds : []);
+    const groups = new Map();
+    for (const e of budget.envelopes) {
+      if (B.isHidden(budget, e) && !picked.has(e.id)) continue;
+      if (!groups.has(e.group)) groups.set(e.group, []);
+      groups.get(e.group).push(e);
+    }
+    $('#share-picks').innerHTML = `<legend>Envelopes</legend>${[...groups].map(([group, envs]) => `<div class="pick-group">
+      <label class="check pick-group-head"><input type="checkbox" data-pick-group="${esc(group)}" ${envs.every((e) => picked.has(e.id)) ? 'checked' : ''}>
+        <span>${esc(group)}</span></label>
+      ${envs.map((e) => `<label class="check"><input type="checkbox" name="pick" value="${e.id}" data-group="${esc(group)}" ${picked.has(e.id) ? 'checked' : ''}><span>${esc(e.name)}</span></label>`).join('')}
+    </div>`).join('') || '<p class="hint">Add envelopes first.</p>'}`;
+    $('#share-dialog').showModal();
+  }
+
+  $('#share-picks').addEventListener('change', (ev) => {
+    const t = ev.target;
+    if (t.dataset.pickGroup !== undefined) {
+      $('#share-picks').querySelectorAll('input[name=pick]').forEach((i) => {
+        if (i.dataset.group === t.dataset.pickGroup) i.checked = t.checked;
+      });
+    } else if (t.name === 'pick') {
+      const all = [...$('#share-picks').querySelectorAll('input[name=pick]')].filter((i) => i.dataset.group === t.dataset.group);
+      const head = [...$('#share-picks').querySelectorAll('[data-pick-group]')].find((i) => i.dataset.pickGroup === t.dataset.group);
+      if (head) head.checked = all.every((i) => i.checked);
+    }
+  });
+
+  $('#share-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    const envelopeIds = [...f.querySelectorAll('input[name=pick]:checked')].map((i) => i.value);
+    await flush(); // the server checks the envelopes against the saved budget
+    try {
+      const res = await api('POST', '/api/shares', { member: f.member.value, role: f.role.value, envelopeIds });
+      $('#share-dialog').close();
+      toast(res.registered
+        ? `Shared ${envelopeIds.length} envelope${envelopeIds.length === 1 ? '' : 's'} with ${res.share.member}`
+        : `Shared. ${res.share.member} will see it after creating an account with that email.`);
+      await loadShares();
+    } catch (err) {
+      $('#share-error').textContent = err.message;
+      $('#share-error').hidden = false;
+    }
+  });
+
+  function renderShared() {
+    const me = account ? account.email : '';
+    $('#shared-list').innerHTML = shares.incoming.map((sh) => {
+      const data = sharedData[sh.id];
+      if (!data) return `<section class="panel"><p class="empty">Could not load what ${esc(sh.owner)} shared.</p></section>`;
+      const b = data.budget;
+      const view = B.monthView(b, month);
+      const fmt = (c) => B.formatMoney(c, b.currency);
+      const rows = view.groups.flatMap((g) => g.envelopes.map((e) => `<tr>
+        <td class="env-cell"><div class="env-name">${esc(e.name)}</div><div class="goal">${esc(g.name)}</div></td>
+        <td class="num" data-label="Assigned">${esc(fmt(e.assigned))}</td>
+        <td class="num" data-label="Spent">${esc(fmt(e.activity))}</td>
+        <td class="num" data-label="Available"><span class="avail ${e.available < 0 ? 'neg' : e.available === 0 ? 'zero' : ''}">${esc(fmt(e.available))}</span></td>
+      </tr>`)).join('');
+      const txs = b.transactions.filter((t) => t.date.slice(0, 7) === month).sort((x, y) => (x.date < y.date ? 1 : -1));
+      const envName = Object.fromEntries(b.envelopes.map((e) => [e.id, e.name]));
+      const canEdit = sh.role === 'edit';
+      return `<section class="panel shared-card" data-share="${sh.id}">
+        <div class="panel-head">
+          <h2>From ${esc(sh.owner)}</h2>
+          <span class="hint">${canEdit ? 'You can add spending' : 'You can see these envelopes'}</span>
+        </div>
+        <div class="table-wrap"><table class="shared-table">
+          <thead><tr><th>Envelope</th><th class="num">Assigned</th><th class="num">Spent</th><th class="num">Available</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="4" class="empty">Nothing shared right now.</td></tr>'}</tbody>
+        </table></div>
+        ${canEdit && b.envelopes.length ? `<form class="shared-form" data-share="${sh.id}" autocomplete="off">
+          <h3 class="sub-h">Add spending</h3>
+          <div class="shared-grid">
+            <label>Date <input type="date" name="date" required value="${todayISO()}"></label>
+            <label>Payee <input type="text" name="payee" maxlength="80" placeholder="Where it went"></label>
+            <label>Amount <input type="text" name="amount" inputmode="decimal" required placeholder="0.00"></label>
+            <label>Envelope <select name="envelopeId">${b.envelopes.map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select></label>
+            <label>Paid from <select name="accountId">${b.accounts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>
+            <label>Note <input type="text" name="note" maxlength="140" placeholder="Optional"></label>
+          </div>
+          <button type="submit" class="primary">Add spending</button>
+          <p class="auth-message" hidden></p>
+        </form>` : ''}
+        <h3 class="sub-h">This month</h3>
+        <ul class="tx-list">${txs.length ? txs.map((t) => `<li>
+          <div class="tx-meta">${esc(t.date)} · ${esc(envName[t.envelopeId] || '')}${t.createdBy && t.createdBy !== me ? ` · by ${esc(t.createdBy)}` : ' · by you'}${t.note ? ` · ${esc(t.note)}` : ''}</div>
+          <div><strong>${esc(t.payee || 'Spending')}</strong></div>
+          <div class="tx-amt ${t.amount > 0 ? 'in' : ''}">${esc(fmt(t.amount))}</div>
+          ${canEdit && t.createdBy === me ? `<button type="button" class="icon tx-del" data-action="delete-shared-tx" data-share="${sh.id}" data-id="${t.id}" aria-label="Delete">&times;</button>` : ''}
+        </li>`).join('') : '<li class="tx-meta">Nothing spent this month.</li>'}</ul>
+        <button type="button" class="icon-text" data-action="leave-share" data-id="${sh.id}">Leave this share</button>
+      </section>`;
+    }).join('') || '<section class="panel"><p class="empty">Nobody has shared envelopes with you.</p></section>';
+  }
+
+  document.addEventListener('submit', async (ev) => {
+    const f = ev.target;
+    if (!f.matches('.shared-form')) return;
+    ev.preventDefault();
+    const err = f.querySelector('.auth-message');
+    const cents = B.parseMoney(f.amount.value);
+    if (Number.isNaN(cents) || cents <= 0) {
+      err.textContent = 'Enter an amount like 12.50.';
+      err.hidden = false;
+      return;
+    }
+    try {
+      const res = await api('POST', `/api/shared/${f.dataset.share}/transactions`, {
+        date: f.date.value, payee: f.payee.value, amount: cents, envelopeId: f.envelopeId.value,
+        accountId: f.accountId.value, note: f.note.value,
+      });
+      sharedData[f.dataset.share] = { ...res, budget: B.fromJSON(res.budget) };
+      render();
+      toast(`Added ${B.formatMoney(cents, res.budget.currency)}`);
+    } catch (e) {
+      err.textContent = e.message;
+      err.hidden = false;
+    }
+  });
 
   // Goals
 

@@ -45,6 +45,15 @@ down. Unspent money rolls over automatically.
   transactions to another envelope).
 - Small celebrations: confetti when reconciling matches the bank, and euro
   notes flying into envelopes when you assign money (off with reduced motion).
+- Goals across accounts, envelopes or net worth, with milestones, the
+  amount needed per month and a forecast at your recent pace.
+- Loans: track a mortgage or loan (rate, payment, original amount) to see
+  what is owed, interest paid, the payoff date and what paying extra saves.
+  A loan calculator handles fixed and variable rates and shows the
+  amortization table.
+- Live sync: changes appear on your other open devices within a second.
+- Share chosen envelopes with another user, who can see them or also add
+  spending to them. Only the owner assigns money.
 - Works on phones, with light and dark themes.
 
 ## Run it
@@ -84,7 +93,11 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/danielsacosta4/Envelo/ma
   To restore one, stop the service and copy it over `db.json`.
 - Saves carry a revision number. If another device saved first, the save is
   refused and the app shows the latest version, so devices never silently
-  overwrite each other.
+  overwrite each other. Open tabs keep an event stream (`/api/events`) and
+  load new versions as soon as they are saved.
+- Shared envelopes: a member only receives the shared envelopes, their
+  assignments and transactions, and the names of the owner's on-budget
+  accounts. Members can delete only spending they added.
 
 ## Security notes
 
@@ -108,6 +121,8 @@ validation, rate limiting, static file access) with Node's built-in test runner.
 - `index.html`: the page (sign-in screen and the app)
 - `server/server.js`: accounts, sessions, budget storage and static files
 - `src/budget.js`: pure budgeting logic, integer cents, no DOM
+- `src/loans.js`: loan maths (payments, amortization, loan status)
+- `src/charts.js`: dependency-free SVG charts
 - `src/app.js`: UI, saving to the server, backup and import
 - `src/styles.css`: styles
 - `scripts/install-proxmox.sh`: one-line Proxmox LXC installer

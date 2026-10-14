@@ -31,6 +31,7 @@
       <button type="button" data-view="reports">Reports</button>
       <button type="button" data-view="goals">Goals</button>
       <button type="button" data-view="loans">Loans</button>
+      <button type="button" data-view="shared" id="nav-shared" hidden>Shared</button>
     </nav>
     <nav class="month-nav" aria-label="Month">
       <button type="button" data-action="prev-month" aria-label="Previous month">&lsaquo;</button>
@@ -155,6 +156,13 @@
         <button type="button" class="danger" data-action="reset">Erase all data</button>
       </section>
 
+      <section class="panel sharing">
+        <h2>Sharing</h2>
+        <ul id="share-list" class="tx-list"></ul>
+        <button type="button" data-action="new-share">Share envelopes with someone</button>
+        <p class="hint">They sign in with their own account and see only the envelopes you pick. You decide whether they can add spending. Only you assign money.</p>
+      </section>
+
       <section class="panel account">
         <div class="account-line">
           <span id="account" class="hint"></span>
@@ -266,6 +274,11 @@
     </div>
     <p class="hint goals-help">Goals add up money across accounts, envelopes or your whole net worth, like "€10,000 emergency fund in savings and Trading 212". Progress uses the month shown above.</p>
     <div id="goal-list" class="goal-list"></div>
+  </section>
+
+  <section id="view-shared" class="layout single" hidden>
+    <div class="report-toolbar"><h2>Shared with you</h2></div>
+    <div id="shared-list" class="shared-list"></div>
   </section>
 
   <section id="view-loans" class="layout single" hidden>
@@ -385,6 +398,26 @@
       <div class="row">
         <button type="submit" class="primary">Reconcile</button>
         <button type="button" data-action="close-reconcile">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="share-dialog" class="target-dialog">
+    <form id="share-form" class="stack" autocomplete="off">
+      <h2 id="share-title">Share envelopes</h2>
+      <p id="share-error" class="auth-message" hidden></p>
+      <label>Their email <input type="email" name="member" required placeholder="partner@example.com"></label>
+      <label>They can
+        <select name="role">
+          <option value="view">See the envelopes</option>
+          <option value="edit">See them and add spending</option>
+        </select>
+      </label>
+      <fieldset class="pick-list share-picks" id="share-picks"></fieldset>
+      <div class="row">
+        <button type="submit" class="primary">Share</button>
+        <button type="button" data-action="close-share">Cancel</button>
+        <button type="button" class="danger" id="share-stop" data-action="stop-share">Stop sharing</button>
       </div>
     </form>
   </dialog>

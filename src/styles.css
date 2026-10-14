@@ -660,3 +660,18 @@ tr.got-money td:first-child { animation: got-money 1.1s ease-out, got-money-edge
   .goal-pct { font-size: 56px; }
 }
 @media (prefers-reduced-motion: reduce) { .goal-bar > i { transition: none; } }
+
+/* Sharing */
+.badge.shared { background: var(--ink); color: var(--card); }
+.share-envs { white-space: normal; }
+.sharing .tx-list li { grid-template-columns: 1fr; }
+.pick-group { margin-bottom: 8px; }
+.pick-group-head span { font-weight: 800; }
+.pick-group > .check:not(.pick-group-head) { margin-left: 22px; }
+.shared-list { display: grid; gap: 18px; }
+.shared-card .table-wrap { margin-bottom: 14px; }
+.shared-form { border: 2px solid var(--ink); background: var(--mint); padding: 12px 14px; margin-bottom: 14px; }
+.shared-form .sub-h { margin-top: 0; }
+.shared-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 14px; margin-bottom: 12px; }
+.shared-grid label { display: flex; flex-direction: column; gap: 4px; font: 800 11px/1.4 var(--sans); letter-spacing: .08em; text-transform: uppercase; }
+@media (max-width: 720px) { .shared-grid { grid-template-columns: 1fr 1fr; } }
