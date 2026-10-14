@@ -283,7 +283,7 @@
     const hiddenRows = [];
     let gi = 0;
     for (const g of view.groups) {
-      const groupHidden = budget.hiddenGroups.includes(g.name);
+      const groupHidden = (budget.hiddenGroups || []).includes(g.name);
       const visible = g.envelopes.filter((e) => !e.hidden);
       for (const e of g.envelopes) if (e.hidden) hiddenRows.push(e);
       if (groupHidden || !visible.length) continue;
@@ -301,7 +301,7 @@
       </tr>`);
       for (const e of visible) rows.push(envelopeRow(e, tone, isCollapsed));
     }
-    const hiddenGroups = budget.hiddenGroups.filter((name) => budget.envelopes.some((e) => e.group === name));
+    const hiddenGroups = (budget.hiddenGroups || []).filter((name) => budget.envelopes.some((e) => e.group === name));
     if (hiddenRows.length) {
       const showing = showHidden;
       rows.push(`<tr class="group hidden-head">
@@ -319,7 +319,6 @@
     renderTransactions();
     renderAccounts();
     renderRecurring();
-    renderReport();
     if (currentView === 'account' && !budget.accounts.some((a) => a.id === openAccountId)) currentView = 'accounts';
     for (const v of ['budget', 'accounts', 'account', 'reports']) $(`#view-${v}`).hidden = v !== currentView;
     const tab = currentView === 'account' ? 'accounts' : currentView;
@@ -328,6 +327,7 @@
     const formHome = currentView === 'account' ? $('#account-side') : $('#budget-side');
     if ($('#tx-panel').parentElement !== formHome) formHome.prepend($('#tx-panel'));
     if (currentView === 'account') renderAccountPage();
+    if (currentView === 'reports') renderReport();
   }
 
   const accountName = (id) => (budget.accounts.find((a) => a.id === id) || {}).name || 'Unknown account';
@@ -424,7 +424,103 @@
     }).join('') : '<li class="tx-meta">Nothing repeats yet.</li>';
   }
 
+  // Chart colours: the validated categorical order, read from CSS so light
+  // and dark themes use their own steps.
+  const seriesColor = (k) => `var(--series-${(k % 7) + 1})`;
+  const compact = (cents) => {
+    try {
+      return new Intl.NumberFormat(undefined, { style: 'currency', currency: budget.currency, notation: 'compact', maximumFractionDigits: 1 }).format(cents / 100);
+    } catch {
+      return money(cents);
+    }
+  };
+
   function renderReport() {
+    renderReportTable();
+    const count = Number($('#report-months').value) || 6;
+    const r = B.report(budget, month, count);
+    const labels = r.months.map((m) => {
+      const [y, mo] = m.split('-').map(Number);
+      return new Date(y, mo - 1, 1).toLocaleString(undefined, { month: 'short' });
+    });
+    const sum = (arr) => arr.reduce((a, v) => a + v, 0);
+    const income = sum(r.income);
+    const spending = sum(r.spending);
+    const net = income - spending;
+    const worth = B.netWorthSeries(budget, r.months);
+    const now = worth[worth.length - 1];
+
+    $('#report-kpis').innerHTML = [
+      ['Average income', money(Math.round(income / count)), 'per month'],
+      ['Average spending', money(Math.round(spending / count)), 'per month'],
+      ['Saved', money(net), income > 0 ? `${Math.round((net / income) * 100)}% of income` : ''],
+      ['Net worth', money(now.total), `on budget ${money(now.onBudget)} · off ${money(now.offBudget)}`],
+    ].map(([k, v, sub]) => `<div class="kpi"><div class="kpi-label">${esc(k)}</div><div class="kpi-value">${esc(v)}</div><div class="kpi-sub">${esc(sub)}</div></div>`).join('');
+
+    Charts.columns($('#chart-income'), {
+      labels,
+      series: [
+        { name: 'Income', color: seriesColor(0), values: r.income.map((v) => Math.max(0, v)) },
+        { name: 'Spending', color: seriesColor(1), values: r.spending.map((v) => Math.max(0, v)) },
+      ],
+      fmt: money, fmtAxis: compact, label: 'Income and spending per month',
+    });
+
+    const groups = B.groupSpending(budget, r.months, 6);
+    if (groups.length) {
+      Charts.columns($('#chart-groups'), {
+        labels,
+        series: groups.map((g, k) => ({ name: g.name, color: seriesColor(k), values: g.values })),
+        stacked: true, fmt: money, fmtAxis: compact, label: 'Spending by group per month',
+      });
+    } else {
+      $('#chart-groups').innerHTML = '<p class="empty">No spending in these months.</p>';
+    }
+
+    Charts.lines($('#chart-networth'), {
+      labels,
+      series: [
+        { name: 'Total', color: seriesColor(0), values: worth.map((w) => w.total) },
+        { name: 'On budget', color: seriesColor(1), values: worth.map((w) => w.onBudget) },
+        { name: 'Off budget', color: seriesColor(2), values: worth.map((w) => w.offBudget) },
+      ],
+      fmt: money, fmtAxis: compact, label: 'Net worth at the end of each month',
+    });
+
+    const top = r.rows.slice(0, 8).map((row) => ({ label: row.name, value: row.total, note: `${money(row.average)} a month` }));
+    if (top.length) {
+      Charts.hbars($('#chart-top'), { items: top, color: seriesColor(0), fmt: money, label: 'Envelopes with the most spending' });
+    } else {
+      $('#chart-top').innerHTML = '<p class="empty">No spending in these months.</p>';
+    }
+
+    const f = B.monthForecast(budget, month, todayISO());
+    $('#forecast').innerHTML = f
+      ? `<p class="forecast-lead">Day ${f.day} of ${f.days}: spent <b>${esc(money(f.spent))}</b>, on pace for <b>${esc(money(f.projected))}</b> by the end of the month.</p>
+        ${f.atRisk.length ? `<ul class="insight-list">${f.atRisk.slice(0, 6).map((a) => `<li><span class="status bad">⚠ At risk</span>
+          <b>${esc(a.name)}</b> is on pace to be <b>${esc(money(a.short))}</b> short.</li>`).join('')}</ul>`
+          : '<p class="status good">✓ Every envelope has enough at this pace.</p>'}`
+      : `<p class="hint">Forecasts are for the current month. Use "Today" to jump to it.</p>`;
+
+    const etas = B.targetForecasts(budget, month);
+    $('#target-eta').innerHTML = etas.length ? `<ul class="insight-list">${etas.map((t) => {
+      const when = t.remaining === 0 ? 'Reached'
+        : t.eta ? `Around ${fmtMonth(t.eta)}` : 'Not yet: nothing assigned in the last 3 months';
+      const status = t.onTrack === null ? ''
+        : t.onTrack ? '<span class="status good">✓ On track</span>' : '<span class="status bad">⚠ Behind</span>';
+      return `<li>${status} <b>${esc(t.name)}</b>: ${esc(money(t.available))} of ${esc(money(t.amount))}.
+        ${esc(when)}${t.rate > 0 && t.remaining > 0 ? ` at ${esc(money(t.rate))}/month` : ''}${t.due ? ` (due ${esc(fmtMonth(t.due))})` : ''}.</li>`;
+    }).join('')}</ul>` : '<p class="hint">Add a "Have a balance" target to an envelope to see when you will reach it.</p>';
+  }
+
+  // Redraw charts when the window size changes.
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { if (currentView === 'reports') renderReport(); }, 150);
+  });
+
+  function renderReportTable() {
     const count = Number($('#report-months').value) || 6;
     const r = B.report(budget, month, count);
     const head = r.months.map((m) => `<th class="num month-col">${esc(fmtMonth(m))}</th>`).join('');

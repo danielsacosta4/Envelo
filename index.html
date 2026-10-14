@@ -229,17 +229,29 @@
   </section>
 
   <section id="view-reports" class="layout single" hidden>
+    <div class="report-toolbar">
+      <h2>Reports</h2>
+      <label class="inline-label">Last
+        <select id="report-months">
+          <option value="3">3 months</option>
+          <option value="6" selected>6 months</option>
+          <option value="12">12 months</option>
+        </select>
+      </label>
+    </div>
+    <div class="kpis" id="report-kpis"></div>
+    <div class="report-grid">
+      <section class="panel"><h2>Income and spending</h2><div class="chart" id="chart-income"></div></section>
+      <section class="panel"><h2>Spending by group</h2><div class="chart" id="chart-groups"></div></section>
+      <section class="panel"><h2>Net worth</h2><div class="chart" id="chart-networth"></div></section>
+      <section class="panel"><h2>Top envelopes</h2><div class="chart" id="chart-top"></div></section>
+    </div>
+    <div class="report-grid">
+      <section class="panel"><h2>This month at the current pace</h2><div id="forecast"></div></section>
+      <section class="panel"><h2>When will targets be reached?</h2><div id="target-eta"></div></section>
+    </div>
     <section class="panel">
-      <div class="panel-head">
-        <h2>Spending by envelope</h2>
-        <label class="inline-label">Last
-          <select id="report-months">
-            <option value="3">3 months</option>
-            <option value="6" selected>6 months</option>
-            <option value="12">12 months</option>
-          </select>
-        </label>
-      </div>
+      <h2>Spending by envelope</h2>
       <div class="table-wrap" id="report"></div>
     </section>
   </section>
@@ -320,6 +332,7 @@
   </dialog>
 
   <script src="src/budget.js"></script>
+  <script src="src/charts.js"></script>
   <script src="src/app.js"></script>
 </body>
 </html>

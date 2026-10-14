@@ -32,9 +32,19 @@ down. Unspent money rolls over automatically.
   reconciling against your bank balance.
 - Recurring transactions (weekly, every 2 weeks, monthly, yearly), created
   automatically when due.
-- Reports: spending per envelope plus income, spending and net per month.
+- Reports: income vs spending, spending by group, net worth over time and top
+  envelopes as charts; a month-end forecast at the current pace; when each
+  savings target will be reached; and the full table per envelope and month.
+- Account pages: every transaction in an account with a running balance,
+  search and date filters.
+- Hide envelopes or whole groups, collapse groups, choose the row size, and
+  print a month's budget.
+- Targets show a coloured progress bar and a green, amber or orange outline
+  around the assigned amount (funded, partly funded, not funded).
 - Edit any transaction; rename, regroup or delete envelopes (moving their
   transactions to another envelope).
+- Small celebrations: confetti when reconciling matches the bank, and euro
+  notes flying into envelopes when you assign money (off with reduced motion).
 - Works on phones, with light and dark themes.
 
 ## Run it

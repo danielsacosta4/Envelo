@@ -25,7 +25,7 @@
   };
 
   function create() {
-    return { version: 1, currency: 'EUR', accounts: [], envelopes: [], transactions: [], assignments: {}, recurring: [] };
+    return { version: 1, currency: 'EUR', accounts: [], envelopes: [], transactions: [], assignments: {}, recurring: [], hiddenGroups: [] };
   }
 
   // Older budgets have no accounts. Put their transactions in one "Main account".
@@ -801,6 +801,94 @@
     return null;
   }
 
+  // ---- Insights for the Reports page ----
+
+  const monthEnd = (m) => {
+    const [y, mo] = m.split('-').map(Number);
+    return `${m}-${String(new Date(Date.UTC(y, mo, 0)).getUTCDate()).padStart(2, '0')}`;
+  };
+
+  // Balance of on-budget and off-budget accounts at the end of each month.
+  function netWorthSeries(b, months) {
+    return months.map((m) => {
+      const end = monthEnd(m);
+      let onBudget = 0;
+      let offBudget = 0;
+      for (const t of b.transactions) {
+        if (t.date > end) continue;
+        if (isOnBudget(b, t.accountId)) onBudget += t.amount; else offBudget += t.amount;
+      }
+      return { month: m, onBudget, offBudget, total: onBudget + offBudget };
+    });
+  }
+
+  // Spending per envelope group per month. Groups beyond `maxGroups` (by total)
+  // fold into "Other" so a chart never needs more colours than it can show.
+  function groupSpending(b, months, maxGroups = 6) {
+    const index = new Map(months.map((m, i) => [m, i]));
+    const groupOf = new Map(b.envelopes.map((e) => [e.id, e.group]));
+    const totals = new Map();
+    for (const t of b.transactions) {
+      const i = index.get(monthOf(t.date));
+      if (i === undefined || !t.envelopeId) continue;
+      const g = groupOf.get(t.envelopeId) || 'Other';
+      if (!totals.has(g)) totals.set(g, months.map(() => 0));
+      totals.get(g)[i] -= t.amount;
+    }
+    const sum = (arr) => arr.reduce((a, v) => a + v, 0);
+    const ranked = [...totals].filter(([, v]) => sum(v) > 0).sort((x, y) => sum(y[1]) - sum(x[1]));
+    const keep = ranked.slice(0, maxGroups).map(([name, values]) => ({ name, values: values.map((v) => Math.max(0, v)) }));
+    const rest = ranked.slice(maxGroups);
+    if (rest.length) {
+      keep.push({ name: 'Other', values: months.map((_, i) => Math.max(0, rest.reduce((a, [, v]) => a + v[i], 0))) });
+    }
+    return keep;
+  }
+
+  // Month-end forecast at the current spending pace. Only meaningful for the
+  // month that contains `today`; returns null otherwise.
+  function monthForecast(b, month, today) {
+    if (monthOf(today) !== month) return null;
+    const day = Number(today.slice(8, 10));
+    const days = Number(monthEnd(month).slice(8, 10));
+    const pace = days / Math.max(1, day);
+    let spent = 0;
+    const atRisk = [];
+    for (const env of b.envelopes) {
+      if (isHidden(b, env)) continue;
+      const st = envelopeStatus(b, env.id, month);
+      const out = Math.max(0, -st.activity);
+      spent += out;
+      if (out === 0) continue;
+      const projected = Math.round(out * pace);
+      const short = projected - out - st.available;
+      if (short > 0) atRisk.push({ id: env.id, name: env.name, projected, short });
+    }
+    atRisk.sort((x, y) => y.short - x.short);
+    return { day, days, spent, projected: Math.round(spent * pace), atRisk };
+  }
+
+  // When will each savings target be reached at the recent saving rate?
+  // Uses the average assigned over the last 3 months.
+  function targetForecasts(b, month) {
+    const out = [];
+    for (const env of b.envelopes) {
+      const t = envTarget(env);
+      if (!t || !['balance', 'byDate'].includes(t.type) || isHidden(b, env)) continue;
+      const st = envelopeStatus(b, env.id, month);
+      const remaining = t.amount - st.available;
+      let assigned = 0;
+      for (let k = 0; k < 3; k++) assigned += assignedIn(b, shiftMonth(month, -k), env.id);
+      const rate = Math.round(assigned / 3);
+      let eta = null;
+      if (remaining <= 0) eta = month;
+      else if (rate > 0) eta = shiftMonth(month, Math.ceil(remaining / rate));
+      const onTrack = t.type === 'byDate' ? !!eta && eta <= t.date : null;
+      out.push({ id: env.id, name: env.name, amount: t.amount, available: st.available, remaining: Math.max(0, remaining), rate, eta, due: t.date || null, onTrack });
+    }
+    return out;
+  }
+
   const api = {
     create, addEnvelope, removeEnvelope, addTransaction, removeTransaction,
     setAssigned, assignedIn, readyToAssign, envelopeStatus, monthView,
@@ -810,6 +898,7 @@
     addAccount, updateAccount, deleteAccount, accountBalance, reconcileAccount, ensureAccounts,
     isOnBudget, transferNeedsEnvelope, countsAsIncome, isHidden, setGroupHidden, accountRegister,
     addRecurring, removeRecurring, applyRecurring, nextRecurringDate, report,
+    netWorthSeries, groupSpending, monthForecast, targetForecasts,
     parseCsv, importTransactionsCsv,
   };
 

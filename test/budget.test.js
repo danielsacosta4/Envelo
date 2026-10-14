@@ -423,3 +423,57 @@ test('account register lists transactions oldest first with a running balance', 
   assert.deepEqual(reg.map((r) => r.t.date), ['2026-10-01', '2026-10-03', '2026-10-05']);
   assert.deepEqual(reg.map((r) => r.balance), [10000, 9000, 6500]);
 });
+
+test('net worth series splits on and off budget at each month end', () => {
+  const b = B.create();
+  B.addAccount(b, { name: 'Checking', balance: 100000, date: '2026-09-15' });
+  const loan = B.addAccount(b, { name: 'Loan', balance: -500000, date: '2026-10-02', offBudget: true });
+  B.addTransaction(b, { kind: 'income', date: '2026-10-20', amount: 5000, accountId: loan.id });
+  const s = B.netWorthSeries(b, ['2026-09', '2026-10']);
+  assert.deepEqual(s.map((x) => [x.onBudget, x.offBudget, x.total]), [[100000, 0, 100000], [100000, -495000, -395000]]);
+});
+
+test('group spending folds small groups into Other', () => {
+  const b = B.create();
+  const names = ['A', 'B', 'C'];
+  names.forEach((g, i) => {
+    const e = B.addEnvelope(b, { name: `E${g}`, group: g });
+    B.addTransaction(b, { kind: 'spend', date: '2026-10-05', amount: 1000 * (i + 1), envelopeId: e.id });
+  });
+  const r = B.groupSpending(b, ['2026-10'], 2);
+  assert.deepEqual(r.map((x) => [x.name, x.values[0]]), [['C', 3000], ['B', 2000], ['Other', 1000]]);
+});
+
+test('month forecast projects spending pace and flags envelopes at risk', () => {
+  const b = B.create();
+  const food = B.addEnvelope(b, { name: 'Food' });
+  const fun = B.addEnvelope(b, { name: 'Fun' });
+  B.setAssigned(b, '2026-10', food.id, 30000);
+  B.setAssigned(b, '2026-10', fun.id, 30000);
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-05', amount: 15000, envelopeId: food.id });
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-05', amount: 2000, envelopeId: fun.id });
+  // Day 10 of 31: Food has spent 150, on pace for 465, with 150 left -> short 165.
+  const f = B.monthForecast(b, '2026-10', '2026-10-10');
+  assert.equal(f.spent, 17000);
+  assert.equal(f.atRisk.length, 1);
+  assert.equal(f.atRisk[0].name, 'Food');
+  assert.equal(f.atRisk[0].short, 16500);
+  assert.equal(B.monthForecast(b, '2026-09', '2026-10-10'), null);
+});
+
+test('target forecasts estimate when savings targets are reached', () => {
+  const b = B.create();
+  const fund = B.addEnvelope(b, { name: 'Emergency', target: { type: 'byDate', amount: 120000, date: '2027-03' } });
+  for (const m of ['2026-08', '2026-09', '2026-10']) B.setAssigned(b, m, fund.id, 10000);
+  const [f] = B.targetForecasts(b, '2026-10');
+  assert.equal(f.rate, 10000);
+  assert.equal(f.remaining, 90000);
+  assert.equal(f.eta, '2027-07');
+  assert.equal(f.onTrack, false);
+});
+
+test('a brand-new budget has every list the app reads', () => {
+  const b = B.create();
+  for (const key of ['accounts', 'envelopes', 'transactions', 'recurring', 'hiddenGroups']) assert.ok(Array.isArray(b[key]), key);
+  assert.deepEqual(B.monthView(b, '2026-10').groups, []);
+});
