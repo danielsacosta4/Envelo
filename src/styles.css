@@ -16,6 +16,7 @@
   --coral: #ff5a3c;
   --coral-soft: #ffd6cc;
   --mint: #cdeee0;
+  --flash: #b6f0cc;
   --blue: #cfe0ff;
   --bad: #b3261e;
   --good: #1f6b4a;
@@ -35,6 +36,7 @@
     --coral: #c9442a;
     --coral-soft: #3e2520;
     --mint: #1d3a2f;
+    --flash: #23583f;
     --blue: #1e2b45;
     --bad: #ff8a80;
     --good: #7fd4a8;
@@ -54,6 +56,7 @@
   --coral: #c9442a;
   --coral-soft: #3e2520;
   --mint: #1d3a2f;
+  --flash: #23583f;
   --blue: #1e2b45;
   --bad: #ff8a80;
   --good: #7fd4a8;
@@ -135,10 +138,10 @@ input:focus, select:focus, button:focus-visible {
 .month-nav button:hover { background: rgba(255,255,255,.18); }
 .month-nav .ghost { font: 800 12px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase; border: 2px solid #fff; color: #fff; }
 
-.ready { margin-left: auto; text-align: right; }
+.ready { margin-left: auto; text-align: right; padding: 6px 14px; }
 .ready .label { font: 900 11px/1 var(--sans); letter-spacing: .16em; text-transform: uppercase; margin-bottom: 6px; }
 .ready .amount { font: italic 400 76px/1 var(--serif); letter-spacing: -.02em; font-variant-numeric: lining-nums; }
-.ready.warn { background: #161616; color: #fff; padding: 6px 14px; }
+.ready.warn { background: #161616; color: #fff; }
 
 .error {
   margin: 14px 28px 0;
@@ -237,7 +240,13 @@ tr:not(.group) td { border-bottom: 1px solid var(--ink); }
   color: var(--card);
   vertical-align: middle;
 }
-.fund { font: 800 12px/1 var(--sans); padding: 6px 9px; }
+.fund { font: 800 12px/1 var(--sans); padding: 6px 9px; white-space: nowrap; }
+.fund-done {
+  display: inline-block; border: 2px solid var(--fund-full); color: var(--good);
+  font: 800 12px/1 var(--sans); padding: 6px 9px; letter-spacing: .02em;
+}
+td.fund-cell { width: 150px; }
+.under-line { white-space: nowrap; min-height: 22px; }
 
 /* Transactions */
 .tx-list { list-style: none; margin: 0; padding: 0; }
@@ -259,6 +268,7 @@ tr:not(.group) td { border-bottom: 1px solid var(--ink); }
   .topbar { padding: 20px 16px 16px; }
   .month-nav span { font-size: 34px; }
   .ready { margin-left: 0; width: 100%; text-align: left; }
+  .under-line { white-space: normal; min-height: 44px; }
   .ready .amount { font-size: 52px; }
   .error { margin: 12px 16px 0; }
 }
@@ -385,7 +395,7 @@ td.num input.fund-partial { border-color: var(--fund-partial); box-shadow: 0 0 0
 td.num input.fund-none { border-color: var(--fund-none); box-shadow: 0 0 0 2px color-mix(in srgb, var(--fund-none) 35%, transparent); }
 
 .tbar { height: 8px; max-width: 260px; margin-top: 6px; border: 1px solid var(--ink); background: var(--card); }
-.tbar > i { display: block; height: 100%; background: var(--ink); transition: width .4s ease; }
+.tbar > i { display: block; height: 100%; background: var(--ink); transition: width .7s cubic-bezier(.3,1.2,.5,1); }
 .tbar.fund-full > i { background: var(--fund-full); }
 .tbar.fund-partial > i { background: var(--fund-partial); }
 .tbar.fund-none > i { background: var(--fund-none); }
@@ -441,17 +451,36 @@ table.register td.neg { color: var(--bad); }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 .confetti { position: fixed; inset: 0; pointer-events: none; z-index: 1000; overflow: hidden; }
 .confetti i { position: absolute; top: 0; width: 9px; height: 14px; border-radius: 2px; }
-.euro-note {
-  position: fixed; z-index: 1000; pointer-events: none; width: 40px; height: 24px;
-  display: grid; place-items: center; font: 900 14px/1 var(--sans); color: #0d3b26;
-  background: linear-gradient(135deg, #8fd6a8, #4fb37c); border: 2px solid #0d3b26; border-radius: 3px;
-  box-shadow: 2px 2px 0 rgba(0,0,0,.25);
+.bill {
+  position: fixed; z-index: 1000; pointer-events: none; width: 54px; height: 32px;
+  display: grid; place-items: center; border-radius: 4px;
+  background:
+    radial-gradient(circle at 80% 50%, rgba(255,255,255,.35) 0 7px, transparent 8px),
+    linear-gradient(135deg, #9fe0b6 0%, #5cbf8a 55%, #3e9d6c 100%);
+  border: 2px solid #0d3b26; box-shadow: 3px 3px 0 rgba(13,59,38,.35);
+  will-change: transform, opacity;
 }
-@keyframes pulse-in { 0% { transform: scale(1); } 40% { transform: scale(1.08); } 100% { transform: scale(1); } }
-td.num input.pulse { animation: pulse-in .45s ease-out; }
+.bill::before { content: ""; position: absolute; inset: 3px; border: 1px dashed rgba(13,59,38,.55); border-radius: 2px; }
+.bill span { font: italic 700 18px/1 var(--serif); color: #0d3b26; margin-right: 10px; }
+.plus-money {
+  position: fixed; z-index: 1001; pointer-events: none; white-space: nowrap;
+  font: italic 700 22px/1 var(--serif); color: var(--good);
+  text-shadow: 0 1px 0 var(--card), 0 0 6px var(--card);
+}
+.spark { position: fixed; z-index: 1001; width: 9px; height: 9px; pointer-events: none; border: 1px solid rgba(0,0,0,.25); }
+@keyframes pulse-in {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.14); box-shadow: 0 0 0 6px color-mix(in srgb, var(--fund-full) 45%, transparent); }
+  100% { transform: scale(1); }
+}
+td.num input.pulse { animation: pulse-in .5s cubic-bezier(.3,1.5,.5,1); }
+@keyframes got-money { 0%, 25% { background-color: var(--flash); } }
+@keyframes got-money-edge { 0%, 30% { box-shadow: inset 6px 0 0 0 var(--fund-full); } 100% { box-shadow: inset 0 0 0 0 var(--fund-full); } }
+tr.got-money td { animation: got-money 1.1s ease-out; }
+tr.got-money td:first-child { animation: got-money 1.1s ease-out, got-money-edge 1.1s ease-out; }
 @media (prefers-reduced-motion: reduce) {
   .toast, .tbar > i { transition: none; }
-  td.num input.pulse { animation: none; }
+  td.num input.pulse, tr.got-money td, tr.got-money td:first-child { animation: none; }
 }
 
 /* Reports */

@@ -183,39 +183,151 @@
     setTimeout(() => layer.remove(), 3400);
   }
 
-  // Euro notes fly from Ready to Assign into the envelopes that got money.
-  function flyNotes(envIds) {
-    if (!envIds.length || reduceMotion() || !document.body.animate) return;
-    const from = $('#ready .amount');
-    if (!from) return;
-    const src = from.getBoundingClientRect();
-    envIds.slice(0, 6).forEach((id, k) => {
-      const target = document.querySelector(`#envelope-rows input[data-env="${id}"]`);
-      if (!target || !target.offsetParent) return;
-      const dst = target.getBoundingClientRect();
-      for (let n = 0; n < 3; n++) {
+  // Money moving into envelopes. `prev` is the month view from before the
+  // change; the page has already been re-rendered with the new numbers.
+  // Banknotes arc from Ready to Assign into each envelope, the totals count
+  // to their new values, progress bars grow, and the row shows what it got.
+  function tweenMoney(el, from, to, duration) {
+    if (!el || from === to) return;
+    const start = performance.now();
+    const step = (now) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - (1 - t) ** 3;
+      el.textContent = money(Math.round(from + (to - from) * eased));
+      if (t < 1) requestAnimationFrame(step);
+    };
+    el.textContent = money(from);
+    requestAnimationFrame(step);
+  }
+
+  function burst(x, y, colors) {
+    for (let i = 0; i < 12; i++) {
+      const s = document.createElement('i');
+      s.className = 'spark';
+      s.style.left = `${x}px`;
+      s.style.top = `${y}px`;
+      s.style.background = colors[i % colors.length];
+      document.body.appendChild(s);
+      const a = (i / 12) * Math.PI * 2;
+      const r = 34 + Math.random() * 22;
+      s.animate([
+        { transform: 'translate(-50%, -50%) scale(1)', opacity: 1 },
+        { transform: `translate(calc(-50% + ${Math.cos(a) * r}px), calc(-50% + ${Math.sin(a) * r}px)) rotate(${a}rad) scale(.3)`, opacity: 0 },
+      ], { duration: 650, easing: 'cubic-bezier(.15,.7,.3,1)', fill: 'forwards' })
+        .finished.then(() => s.remove(), () => s.remove());
+    }
+  }
+
+  function fundFx(prev, envIds) {
+    const before = new Map(prev.groups.flatMap((g) => g.envelopes).map((e) => [e.id, e]));
+    const after = B.monthView(budget, month);
+    const now = new Map(after.groups.flatMap((g) => g.envelopes).map((e) => [e.id, e]));
+    const changed = envIds.filter((id) => before.has(id) && now.has(id) && now.get(id).assigned > before.get(id).assigned);
+    if (!changed.length || reduceMotion() || !document.body.animate) return;
+
+    const readyAmount = $('#ready .amount');
+    const FLIGHT = 950;
+    tweenMoney(readyAmount, prev.readyToAssign, after.readyToAssign, FLIGHT + changed.length * 90);
+    if (readyAmount) {
+      readyAmount.animate([
+        { transform: 'scale(1)' }, { transform: 'scale(.94) rotate(-1deg)', offset: 0.25 }, { transform: 'scale(1)' },
+      ], { duration: 420, easing: 'ease-out' });
+    }
+    const src = (readyAmount || $('#ready')).getBoundingClientRect();
+    // When Ready to Assign is scrolled away, the notes enter from the top edge.
+    const sx = src.left + src.width / 2;
+    const sy = Math.max(-20, Math.min(window.innerHeight, src.top + src.height / 2));
+
+    changed.slice(0, 8).forEach((id, k) => {
+      const old = before.get(id);
+      const env = now.get(id);
+      const row = document.querySelector(`tr[data-env-row="${id}"]`);
+      const input = row && row.querySelector('input[data-env]');
+      if (!row || !input || !input.offsetParent) return;
+      const delay = k * 90;
+      const landAt = delay + FLIGHT;
+
+      // Numbers and the progress bar start from their old values.
+      const avail = row.querySelector('.avail');
+      const bar = row.querySelector('.tbar > i');
+      if (avail) avail.textContent = money(old.available);
+      if (bar) {
+        bar.style.transition = 'none';
+        bar.style.width = `${Math.round((old.progress || 0) * 100)}%`;
+        void bar.offsetWidth;
+        bar.style.transition = '';
+      }
+
+      // More notes for bigger amounts.
+      const added = env.assigned - old.assigned;
+      const count = changed.length > 1 ? 3 : Math.max(4, Math.min(9, Math.ceil(Math.log10(Math.max(100, added)) * 2)));
+      const dst = input.getBoundingClientRect();
+      const dx = dst.left + dst.width / 2 - sx;
+      const dy = dst.top + dst.height / 2 - sy;
+      for (let n = 0; n < count; n++) {
         const note = document.createElement('div');
-        note.className = 'euro-note';
-        note.textContent = '€';
-        note.style.left = `${src.left + src.width / 2 - 20}px`;
-        note.style.top = `${src.top + src.height / 2 - 12}px`;
+        note.className = 'bill';
+        note.innerHTML = '<span>€</span>';
+        note.style.left = `${sx - 27}px`;
+        note.style.top = `${sy - 16}px`;
         document.body.appendChild(note);
-        const dx = dst.left + dst.width / 2 - (src.left + src.width / 2);
-        const dy = dst.top + dst.height / 2 - (src.top + src.height / 2);
-        const tilt = (n - 1) * 12;
-        note.animate([
-          { transform: `translate(0, 0) rotate(${tilt}deg) scale(1)`, opacity: 0 },
-          { opacity: 1, offset: 0.1 },
-          { transform: `translate(${dx * 0.5}px, ${dy * 0.5 - 90}px) rotate(${tilt * -2}deg) scale(1.1)`, offset: 0.5 },
-          { transform: `translate(${dx}px, ${dy}px) rotate(0deg) scale(.6)`, opacity: 0.2 },
-        ], { duration: 900, delay: k * 120 + n * 90, easing: 'ease-in-out', fill: 'forwards' })
+        // A curved path through a random point above the line between the two.
+        const cx = dx * (0.3 + Math.random() * 0.3) + (Math.random() - 0.5) * 160;
+        const cy = Math.min(0, dy) * 0.5 - 80 - Math.random() * 90;
+        const spin = (Math.random() - 0.5) * 50;
+        const frames = [];
+        for (let i = 0; i <= 12; i++) {
+          const t = i / 12;
+          const x = 2 * (1 - t) * t * cx + t * t * dx;
+          const y = 2 * (1 - t) * t * cy + t * t * dy;
+          const flutter = Math.cos(t * Math.PI * 3 + n);
+          frames.push({
+            transform: `translate(${x}px, ${y}px) rotate(${spin * Math.sin(t * Math.PI * 2) + t * 8}deg) scale(${(1.15 - t * 0.6).toFixed(3)}, ${((1.15 - t * 0.6) * (0.55 + 0.45 * Math.abs(flutter))).toFixed(3)})`,
+            opacity: t < 0.08 ? t / 0.08 : t > 0.9 ? (1 - t) * 10 : 1,
+            offset: t,
+          });
+        }
+        note.animate(frames, { duration: FLIGHT, delay: delay + n * 55, easing: 'cubic-bezier(.45,0,.4,1)', fill: 'both' })
           .finished.then(() => note.remove(), () => note.remove());
       }
+
       setTimeout(() => {
-        target.classList.remove('pulse');
-        void target.offsetWidth;
-        target.classList.add('pulse');
-      }, k * 120 + 900);
+        if (!row.isConnected) return;
+        input.classList.remove('pulse');
+        void input.offsetWidth;
+        input.classList.add('pulse');
+        row.classList.remove('got-money');
+        void row.offsetWidth;
+        row.classList.add('got-money');
+        setTimeout(() => row.classList.remove('got-money'), 1200);
+        if (avail) tweenMoney(avail, old.available, env.available, 600);
+        if (bar) bar.style.width = `${Math.round((env.progress || 0) * 100)}%`;
+
+        // "+€50.00" rises from the envelope.
+        const box = (avail || input).getBoundingClientRect();
+        const plus = document.createElement('div');
+        plus.className = 'plus-money';
+        plus.textContent = `+${money(added)}`;
+        plus.style.left = `${box.left + box.width / 2}px`;
+        plus.style.top = `${box.top}px`;
+        document.body.appendChild(plus);
+        plus.animate([
+          { transform: 'translate(-50%, 6px) scale(.6)', opacity: 0 },
+          { transform: 'translate(-50%, -14px) scale(1.15)', opacity: 1, offset: 0.25 },
+          { transform: 'translate(-50%, -46px) scale(1)', opacity: 0 },
+        ], { duration: 1300, easing: 'cubic-bezier(.2,.7,.3,1)', fill: 'forwards' })
+          .finished.then(() => plus.remove(), () => plus.remove());
+
+        // A target that is now fully funded gets a burst on its badge.
+        const done = row.querySelector('.fund-done');
+        if (done && old.underfunded && !env.underfunded) {
+          done.animate([
+            { transform: 'scale(0)' }, { transform: 'scale(1.25)', offset: 0.6 }, { transform: 'scale(1)' },
+          ], { duration: 450, easing: 'cubic-bezier(.3,1.6,.5,1)' });
+          const d = done.getBoundingClientRect();
+          burst(d.left + d.width / 2, d.top + d.height / 2, ['#ffd23f', '#1f8a5b', '#ff5a3c', '#2d5bff']);
+        }
+      }, landAt);
     });
   }
 
@@ -242,15 +354,18 @@
     const availClass = e.available < 0 || e.underfunded ? 'neg' : e.available === 0 ? 'zero' : '';
     const state = fundState(e);
     const pct = Math.round((e.progress || 0) * 100);
-    const goal = e.target ? `<div class="goal ${e.underfunded ? 'short' : 'done'}">${esc(describeTarget(e))}
-        · ${e.underfunded ? `needs ${esc(money(e.needed))} this month` : 'funded'}</div>
+    // The goal line keeps the same text whether funded or not, and the fund
+    // cell always holds something the same size, so funding never moves rows.
+    const goal = e.target ? `<div class="goal ${e.underfunded ? 'short' : 'done'}">${esc(describeTarget(e))}</div>
       <div class="tbar ${state}" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"
         aria-label="${esc(e.name)} target ${pct}%"><i style="width:${pct}%"></i></div>` : '';
     const fund = isHiddenRow
       ? `<button type="button" class="fund" data-action="unhide-envelope" data-id="${e.id}">Unhide</button>`
       : e.underfunded
         ? `<button type="button" class="fund" data-action="fund" data-id="${e.id}" data-amount="${e.needed}">Assign ${esc(money(e.needed))}</button>`
-        : '';
+        : e.target
+          ? '<span class="fund fund-done">✓ Funded</span>'
+          : '';
     return `<tr class="${tone}${isCollapsed ? ' is-collapsed' : ''}" data-env-row="${e.id}">
       <td class="env-cell"><div class="env-name"><button type="button" class="env-link" data-action="edit-target" data-id="${e.id}" title="Edit envelope and target">${esc(e.name)}</button>${e.overspent ? '<span class="badge">Overspent</span>' : ''}</div>${goal}</td>
       <td class="num" data-label="Assigned"><input type="text" inputmode="decimal" class="${state}" aria-label="Assigned to ${esc(e.name)}"
@@ -276,7 +391,8 @@
     ready.innerHTML = `<div class="label">Ready to assign</div>
       <div class="amount">${esc(money(view.readyToAssign))}</div>
       ${view.underfunded > 0 ? `<div class="under-line">Targets need ${esc(money(view.underfunded))} this month
-        <button type="button" data-action="fund-all">Fund all targets</button></div>` : ''}`;
+        <button type="button" data-action="fund-all">Fund all targets</button></div>`
+    : budget.envelopes.some((e) => e.target && !B.isHidden(budget, e)) ? '<div class="under-line">✓ All targets funded</div>' : ''}`;
 
     const rows = [];
     const collapsed = readCollapsed();
@@ -671,8 +787,9 @@
       case 'this-month': month = thisMonth(); render(); break;
       case 'fund': {
         const cur = B.assignedIn(budget, month, btn.dataset.id);
+        const prev = B.monthView(budget, month);
         if (attempt(() => B.setAssigned(budget, month, btn.dataset.id, cur + Number(btn.dataset.amount)))) {
-          flyNotes([btn.dataset.id]);
+          fundFx(prev, [btn.dataset.id]);
         }
         break;
       }
@@ -681,11 +798,12 @@
         break;
       case 'fund-all': {
         let total = 0;
-        const before = Object.fromEntries(budget.envelopes.map((e) => [e.id, B.assignedIn(budget, month, e.id)]));
+        const prev = B.monthView(budget, month);
         const ok = attempt(() => { total = B.fundAllTargets(budget, month); });
         if (ok && total === 0) showError('There is no money in Ready to Assign to fund targets.');
         if (ok && total > 0) {
-          flyNotes(budget.envelopes.filter((e) => B.assignedIn(budget, month, e.id) > before[e.id]).map((e) => e.id));
+          fundFx(prev, budget.envelopes.map((e) => e.id));
+          toast(`Assigned ${money(total)} to your targets`);
         }
         break;
       }
@@ -825,10 +943,8 @@
         render();
         return;
       }
-      const before = B.assignedIn(budget, month, t.dataset.env);
-      if (attempt(() => B.setAssigned(budget, month, t.dataset.env, cents)) && cents > before) {
-        flyNotes([t.dataset.env]);
-      }
+      const prev = B.monthView(budget, month);
+      if (attempt(() => B.setAssigned(budget, month, t.dataset.env, cents))) fundFx(prev, [t.dataset.env]);
     } else if (t.id === 'currency') {
       budget.currency = t.value;
       attempt(() => {});
