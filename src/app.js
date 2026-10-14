@@ -140,6 +140,85 @@
     }
   }
 
+  // Animations. Skipped entirely when the device asks for reduced motion.
+  const reduceMotion = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function toast(message) {
+    let el = $('#toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'toast';
+      el.className = 'toast';
+      el.setAttribute('role', 'status');
+      document.body.appendChild(el);
+    }
+    el.textContent = message;
+    el.classList.remove('show');
+    void el.offsetWidth; // restart the transition
+    el.classList.add('show');
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => el.classList.remove('show'), 3200);
+  }
+
+  function celebrate(message) {
+    toast(message);
+    if (reduceMotion() || !document.body.animate) return;
+    const colors = ['#ff5a3c', '#1f8a5b', '#ffd23f', '#2d5bff', '#ff8fb1', '#f4efe4'];
+    const layer = document.createElement('div');
+    layer.className = 'confetti';
+    document.body.appendChild(layer);
+    const w = window.innerWidth;
+    for (let i = 0; i < 70; i++) {
+      const piece = document.createElement('i');
+      piece.style.background = colors[i % colors.length];
+      piece.style.left = `${Math.random() * w}px`;
+      layer.appendChild(piece);
+      const drift = (Math.random() - 0.5) * 240;
+      const spin = (Math.random() - 0.5) * 1080;
+      piece.animate([
+        { transform: 'translate(0, -20px) rotate(0deg)', opacity: 1 },
+        { transform: `translate(${drift}px, ${window.innerHeight + 40}px) rotate(${spin}deg)`, opacity: 0.9 },
+      ], { duration: 1600 + Math.random() * 1200, delay: Math.random() * 300, easing: 'cubic-bezier(.2,.6,.4,1)', fill: 'forwards' });
+    }
+    setTimeout(() => layer.remove(), 3400);
+  }
+
+  // Euro notes fly from Ready to Assign into the envelopes that got money.
+  function flyNotes(envIds) {
+    if (!envIds.length || reduceMotion() || !document.body.animate) return;
+    const from = $('#ready .amount');
+    if (!from) return;
+    const src = from.getBoundingClientRect();
+    envIds.slice(0, 6).forEach((id, k) => {
+      const target = document.querySelector(`#envelope-rows input[data-env="${id}"]`);
+      if (!target || !target.offsetParent) return;
+      const dst = target.getBoundingClientRect();
+      for (let n = 0; n < 3; n++) {
+        const note = document.createElement('div');
+        note.className = 'euro-note';
+        note.textContent = '€';
+        note.style.left = `${src.left + src.width / 2 - 20}px`;
+        note.style.top = `${src.top + src.height / 2 - 12}px`;
+        document.body.appendChild(note);
+        const dx = dst.left + dst.width / 2 - (src.left + src.width / 2);
+        const dy = dst.top + dst.height / 2 - (src.top + src.height / 2);
+        const tilt = (n - 1) * 12;
+        note.animate([
+          { transform: `translate(0, 0) rotate(${tilt}deg) scale(1)`, opacity: 0 },
+          { opacity: 1, offset: 0.1 },
+          { transform: `translate(${dx * 0.5}px, ${dy * 0.5 - 90}px) rotate(${tilt * -2}deg) scale(1.1)`, offset: 0.5 },
+          { transform: `translate(${dx}px, ${dy}px) rotate(0deg) scale(.6)`, opacity: 0.2 },
+        ], { duration: 900, delay: k * 120 + n * 90, easing: 'ease-in-out', fill: 'forwards' })
+          .finished.then(() => note.remove(), () => note.remove());
+      }
+      setTimeout(() => {
+        target.classList.remove('pulse');
+        void target.offsetWidth;
+        target.classList.add('pulse');
+      }, k * 120 + 900);
+    });
+  }
+
   // Collapsed groups are a per-device preference.
   const COLLAPSED_KEY = 'envelo.collapsed';
   function readCollapsed() {
@@ -496,7 +575,9 @@
       case 'this-month': month = thisMonth(); render(); break;
       case 'fund': {
         const cur = B.assignedIn(budget, month, btn.dataset.id);
-        attempt(() => B.setAssigned(budget, month, btn.dataset.id, cur + Number(btn.dataset.amount)));
+        if (attempt(() => B.setAssigned(budget, month, btn.dataset.id, cur + Number(btn.dataset.amount)))) {
+          flyNotes([btn.dataset.id]);
+        }
         break;
       }
       case 'delete-tx':
@@ -504,8 +585,12 @@
         break;
       case 'fund-all': {
         let total = 0;
+        const before = Object.fromEntries(budget.envelopes.map((e) => [e.id, B.assignedIn(budget, month, e.id)]));
         const ok = attempt(() => { total = B.fundAllTargets(budget, month); });
         if (ok && total === 0) showError('There is no money in Ready to Assign to fund targets.');
+        if (ok && total > 0) {
+          flyNotes(budget.envelopes.filter((e) => B.assignedIn(budget, month, e.id) > before[e.id]).map((e) => e.id));
+        }
         break;
       }
       case 'edit-target': openTarget(btn.dataset.id); break;
@@ -618,9 +703,10 @@
     }
     $('#reconcile-dialog').close();
     attempt(() => {});
-    alert(diff === 0
-      ? 'Reconciled. Envelo matches your bank.'
-      : `Reconciled. Envelo added an adjustment of ${money(diff)} to match your bank. It counts toward Ready to Assign.`);
+    const acct = budget.accounts.find((a) => a.id === reconcilingAccount);
+    celebrate(diff === 0
+      ? `🎉 ${acct ? acct.name : 'Account'} matches your bank`
+      : `🎉 Reconciled. Added an adjustment of ${money(diff)} to match your bank`);
   });
 
   $('#account-form').addEventListener('submit', (ev) => {
@@ -643,7 +729,10 @@
         render();
         return;
       }
-      attempt(() => B.setAssigned(budget, month, t.dataset.env, cents));
+      const before = B.assignedIn(budget, month, t.dataset.env);
+      if (attempt(() => B.setAssigned(budget, month, t.dataset.env, cents)) && cents > before) {
+        flyNotes([t.dataset.env]);
+      }
     } else if (t.id === 'currency') {
       budget.currency = t.value;
       attempt(() => {});
