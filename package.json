@@ -1,11 +1,11 @@
 {
   "name": "envelo",
-  "version": "0.1.0-alpha.5",
+  "version": "0.1.0-alpha.6",
   "private": true,
   "description": "Self-hosted envelope budgeting with accounts, targets and reports",
   "scripts": {
     "start": "node server/server.js",
-    "test": "node --test test/budget.test.js test/server.test.js test/actual-import.test.js"
+    "test": "node --test test/budget.test.js test/server.test.js test/actual-import.test.js test/loans.test.js"
   },
   "license": "UNLICENSED"
 }

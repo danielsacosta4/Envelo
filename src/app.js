@@ -436,7 +436,7 @@
     renderAccounts();
     renderRecurring();
     if (currentView === 'account' && !budget.accounts.some((a) => a.id === openAccountId)) currentView = 'accounts';
-    for (const v of ['budget', 'accounts', 'account', 'reports']) $(`#view-${v}`).hidden = v !== currentView;
+    for (const v of ['budget', 'accounts', 'account', 'reports', 'loans']) $(`#view-${v}`).hidden = v !== currentView;
     const tab = currentView === 'account' ? 'accounts' : currentView;
     document.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === tab));
     // The transaction form lives on the budget page and on an account page.
@@ -444,6 +444,7 @@
     if ($('#tx-panel').parentElement !== formHome) formHome.prepend($('#tx-panel'));
     if (currentView === 'account') renderAccountPage();
     if (currentView === 'reports') renderReport();
+    if (currentView === 'loans') renderLoans();
   }
 
   const accountName = (id) => (budget.accounts.find((a) => a.id === id) || {}).name || 'Unknown account';
@@ -494,6 +495,9 @@
       ? `${acct.reconciledAt} at ${money(acct.reconciledBalance)}`
       : lastReconciled ? `Up to ${lastReconciled}` : 'Never';
     $('#acct-reconcile').dataset.id = acct.id;
+    $('#acct-loan').hidden = !acct.offBudget;
+    $('#acct-loan').dataset.id = acct.id;
+    $('#acct-loan').textContent = acct.loan ? 'Loan details' : 'Track as a loan';
 
     const names = Object.fromEntries(budget.envelopes.map((e) => [e.id, e.name]));
     const from = periodStart($('#acct-period').value);
@@ -633,7 +637,10 @@
   let resizeTimer = null;
   window.addEventListener('resize', () => {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => { if (currentView === 'reports') renderReport(); }, 150);
+    resizeTimer = setTimeout(() => {
+      if (currentView === 'reports') renderReport();
+      if (currentView === 'loans') renderLoans();
+    }, 150);
   });
 
   function renderReportTable() {
@@ -867,6 +874,52 @@
         render();
         window.scrollTo(0, 0);
         break;
+      case 'new-loan': openLoan(null); break;
+      case 'edit-loan': openLoan(btn.dataset.id); break;
+      case 'close-loan': $('#loan-dialog').close(); break;
+      case 'remove-loan': {
+        const acct = budget.accounts.find((a) => a.id === editingLoan);
+        if (acct && confirm(`Stop tracking ${acct.name} as a loan? The account and its transactions stay.`)) {
+          delete acct.loan;
+          $('#loan-dialog').close();
+          attempt(() => {});
+        }
+        break;
+      }
+      case 'loan-interest': {
+        const acct = budget.accounts.find((a) => a.id === btn.dataset.id);
+        const amount = Number(btn.dataset.amount);
+        if (!acct || !(amount > 0)) break;
+        const done = loanTransactions(acct.id).some((t) => t.payee === 'Interest' && t.date.slice(0, 7) === thisMonth());
+        if (done && !confirm('Interest was already recorded this month. Record it again?')) break;
+        if (attempt(() => B.addTransaction(budget, { kind: 'spend', date: todayISO(), payee: 'Interest', amount, accountId: acct.id }))) {
+          toast(`Added ${money(amount)} interest to ${acct.name}`);
+        }
+        break;
+      }
+      case 'add-rate-change': {
+        const rows = document.querySelectorAll('#rate-change-rows .rc-row').length;
+        addRateChangeRow(String((rows + 1) * 5), '');
+        renderCalculator();
+        break;
+      }
+      case 'remove-rate-change': btn.closest('.rc-row').remove(); renderCalculator(); break;
+      case 'calc-track':
+        if (!lastCalc) break;
+        openLoan(null, {
+          name: '', owed: lastCalc.amount, original: lastCalc.amount, rate: lastCalc.rate,
+          payment: lastCalc.payment + lastCalc.extra, startDate: `${lastCalc.start}-01`,
+        });
+        break;
+      case 'calc-envelope': {
+        if (!lastCalc) break;
+        const name = prompt('Name of the envelope for the loan payment', 'Loan payment');
+        if (!name) break;
+        if (attempt(() => B.addEnvelope(budget, { name, group: 'Loans', target: { type: 'monthly', amount: lastCalc.payment + lastCalc.extra } }))) {
+          toast(`Created "${name}" with a target of ${money(lastCalc.payment + lastCalc.extra)} a month`);
+        }
+        break;
+      }
       case 'back-to-accounts': currentView = 'accounts'; render(); break;
       case 'close-reconcile': $('#reconcile-dialog').close(); break;
       case 'close-target': $('#target-dialog').close(); break;
@@ -1097,6 +1150,278 @@
   // Default the date field to today and sync the type toggle on load.
   $('#tx-form').date.value = todayISO();
   syncKind();
+
+  // Loans: off-budget accounts with loan details, plus a calculator.
+
+  const L = Loans;
+  const loanExtra = {}; // what-if extra payment per loan, not saved
+  const parseRate = (v) => {
+    const text = String(v ?? '').replace('%', '').replace(',', '.').trim();
+    return text === '' ? NaN : Number(text);
+  };
+  function duration(months) {
+    const y = Math.floor(months / 12);
+    const m = months % 12;
+    const parts = [];
+    if (y) parts.push(`${y} year${y === 1 ? '' : 's'}`);
+    if (m || !y) parts.push(`${m} month${m === 1 ? '' : 's'}`);
+    return parts.join(' ');
+  }
+  // Balance at the end of each year, for charts. Shorter schedules pad with 0.
+  function yearlyBalances(schedules, startBalance) {
+    const longest = Math.max(...schedules.map((s) => s.rows.length));
+    const points = [];
+    for (let i = 0; i <= longest; i += 12) points.push(i);
+    if (points[points.length - 1] !== longest) points.push(longest);
+    const labels = points.map((i) => {
+      const row = schedules[0].rows[Math.max(0, i - 1)] || schedules.find((s) => s.rows[i - 1]).rows[i - 1];
+      return i === 0 ? 'Now' : row && row.month ? row.month.slice(0, 4) : `Year ${Math.ceil(i / 12)}`;
+    });
+    const series = schedules.map((s) => points.map((i) => (i === 0 ? startBalance : s.rows[i - 1] ? s.rows[i - 1].balance : 0)));
+    return { labels, series };
+  }
+
+  function loanTransactions(id) {
+    return budget.transactions.filter((t) => t.accountId === id);
+  }
+
+  function whatIfText(a, st) {
+    if (st.paidOff) return '';
+    if (!loanExtra[a.id]) return 'Enter an amount to see how much sooner you would be debt free.';
+    if (st.faster.neverPaysOff) return 'Still not enough to cover the interest.';
+    if (st.interestSaved == null) return `Debt free in <b>${esc(fmtMonth(st.faster.payoffMonth))}</b>.`;
+    return `Debt free in <b>${esc(fmtMonth(st.faster.payoffMonth))}</b>, <b>${esc(duration(st.monthsSaved))}</b> sooner, saving <b>${esc(money(st.interestSaved))}</b> in interest.`;
+  }
+
+  function drawLoanChart(a, st) {
+    const el = document.getElementById(`loan-chart-${a.id}`);
+    if (!el) return;
+    if (st.paidOff || st.plan.neverPaysOff) { el.hidden = true; return; }
+    el.hidden = false;
+    const scheds = st.faster && !st.faster.neverPaysOff ? [st.plan, st.faster] : [st.plan];
+    const { labels, series } = yearlyBalances(scheds, st.owed);
+    Charts.lines(el, {
+      labels,
+      series: series.map((values, k) => ({ name: k ? 'With extra payments' : 'Owed', color: seriesColor(k ? 2 : 1), values })),
+      fmt: money, fmtAxis: compact, label: `${a.name}: amount owed over time`,
+    });
+  }
+
+  // Typing an extra payment updates only that loan's what-if line and chart,
+  // so the page is never rebuilt under the cursor.
+  let extraTimer = null;
+  document.addEventListener('input', (ev) => {
+    const t = ev.target;
+    if (!t.matches('[data-loan-extra]')) return;
+    clearTimeout(extraTimer);
+    extraTimer = setTimeout(() => {
+      const a = budget.accounts.find((x) => x.id === t.dataset.loanExtra);
+      if (!a || !a.loan) return;
+      const text = t.value.trim();
+      const cents = text ? B.parseMoney(text) : 0;
+      loanExtra[a.id] = Number.isNaN(cents) || cents < 0 ? 0 : cents;
+      const st = L.loanStatus(a.loan, loanTransactions(a.id), { today: todayISO(), extra: loanExtra[a.id] });
+      const box = document.querySelector(`.what-if[data-loan="${a.id}"] p`);
+      if (box) box.innerHTML = whatIfText(a, st);
+      drawLoanChart(a, st);
+    }, 200);
+  });
+
+  function renderLoans() {
+    const loans = budget.accounts.filter((a) => a.loan);
+    const today = todayISO();
+    $('#loan-list').innerHTML = loans.length ? loans.map((a) => {
+      const st = L.loanStatus(a.loan, loanTransactions(a.id), { today, extra: loanExtra[a.id] || 0 });
+      const pct = st.progress == null ? null : Math.round(st.progress * 100);
+      const interestThisMonth = loanTransactions(a.id).some((t) => t.payee === 'Interest' && t.date.slice(0, 7) === today.slice(0, 7));
+      const payoff = st.paidOff ? 'Paid off'
+        : st.plan.neverPaysOff ? 'Never at this payment: it does not cover the interest'
+        : `${fmtMonth(st.plan.payoffMonth)} · in ${duration(st.plan.months)}`;
+      return `<article class="panel loan-card">
+        <header class="loan-head">
+          <h3>${esc(a.name)}</h3>
+          <span class="hint">${esc(String(a.loan.rate).replace('.', ','))}% a year · ${esc(money(a.loan.payment))} a month</span>
+        </header>
+        <div class="loan-top">
+          <div><div class="label">Owed</div><div class="loan-owed">${esc(money(st.owed))}</div></div>
+          ${pct == null ? '' : `<div class="loan-progress"><div class="label">${pct}% repaid</div>
+            <div class="tbar fund-full" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(a.name)} repaid"><i style="width:${pct}%"></i></div>
+            <div class="hint">${esc(money(st.principalRepaid))} of ${esc(money(a.loan.original))}</div></div>`}
+        </div>
+        <dl class="facts">
+          <div><dt>Paid off</dt><dd>${esc(payoff)}</dd></div>
+          ${st.paidOff ? '' : `<div><dt>Interest this month</dt><dd>${esc(money(st.monthlyInterest))}</dd></div>`}
+          ${st.interestPaid == null ? '' : `<div><dt>Interest paid so far</dt><dd>${esc(money(st.interestPaid))}</dd></div>`}
+          ${st.paidOff || st.plan.neverPaysOff ? '' : `<div><dt>Interest still to pay</dt><dd>${esc(money(st.plan.totalInterest))}</dd></div>`}
+        </dl>
+        ${st.paidOff ? '' : `<div class="what-if" data-loan="${a.id}">
+          <label class="inline-label">Pay extra each month <input type="text" inputmode="decimal" data-loan-extra="${a.id}" value="${loanExtra[a.id] ? B.toInput(loanExtra[a.id]) : ''}" placeholder="0.00"></label>
+          <p>${whatIfText(a, st)}</p>
+        </div>
+        <div class="chart loan-chart" id="loan-chart-${a.id}"></div>`}
+        <div class="row">
+          ${st.paidOff ? '' : `<button type="button" data-action="loan-interest" data-id="${a.id}" data-amount="${st.monthlyInterest}"
+            title="Adds the interest to the amount owed">${interestThisMonth ? '✓ Interest recorded this month' : `Record interest (${esc(money(st.monthlyInterest))})`}</button>`}
+          <button type="button" data-action="edit-loan" data-id="${a.id}">Edit details</button>
+          <button type="button" data-action="open-account" data-id="${a.id}">Open account</button>
+        </div>
+      </article>`;
+    }).join('') : `<section class="panel"><p class="empty">No loans tracked yet. Use "Track a loan" to add a mortgage, car loan or personal loan,
+      or try the calculator below and track the result.</p></section>`;
+
+    for (const a of loans) drawLoanChart(a, L.loanStatus(a.loan, loanTransactions(a.id), { today, extra: loanExtra[a.id] || 0 }));
+    renderCalculator();
+  }
+
+  // Calculator
+
+  function calcInput() {
+    const f = $('#calc-form');
+    const amount = B.parseMoney(f.amount.value);
+    const rate = parseRate(f.rate.value);
+    const years = Number(f.years.value);
+    const extraText = f.extra.value.trim();
+    const extra = extraText ? B.parseMoney(extraText) : 0;
+    if (!f.start.value) f.start.value = B.shiftMonth(thisMonth(), 1);
+    const rateChanges = f.kind.value === 'variable'
+      ? [...document.querySelectorAll('#rate-change-rows .rc-row')].map((row) => ({
+        after: Math.round(Number(row.querySelector('[name=rcYear]').value) * 12),
+        rate: parseRate(row.querySelector('[name=rcRate]').value),
+      })).filter((c) => c.after > 0 && Number.isFinite(c.rate))
+      : [];
+    if (Number.isNaN(amount) || amount <= 0) return { error: 'Enter the amount to borrow.' };
+    if (!Number.isFinite(rate) || rate < 0 || rate > 100) return { error: 'Enter an interest rate between 0 and 100.' };
+    if (!(years >= 1 && years <= 50)) return { error: 'Enter a term between 1 and 50 years.' };
+    if (Number.isNaN(extra) || extra < 0) return { error: 'Extra payment must be an amount.' };
+    return { amount, rate, months: Math.round(years * 12), extra, rateChanges, start: f.start.value };
+  }
+
+  let lastCalc = null;
+  function renderCalculator() {
+    $('#rate-changes').hidden = $('#calc-form').kind.value !== 'variable';
+    const c = calcInput();
+    if (c.error) {
+      lastCalc = null;
+      $('#calc-kpis').innerHTML = `<p class="status bad">${esc(c.error)}</p>`;
+      $('#calc-chart').innerHTML = '';
+      $('#calc-table').innerHTML = '';
+      return;
+    }
+    const base = L.schedule({ principal: c.amount, annualRate: c.rate, months: c.months, rateChanges: c.rateChanges, startMonth: c.start });
+    const fast = c.extra > 0
+      ? L.schedule({ principal: c.amount, annualRate: c.rate, months: c.months, rateChanges: c.rateChanges, extra: c.extra, startMonth: c.start })
+      : null;
+    lastCalc = { ...c, payment: base.payment };
+    const tiles = [
+      ['Monthly payment', money(base.payment), c.rateChanges.length ? 'at the starting rate' : 'fixed for the whole term'],
+      ['Total interest', money(base.totalInterest), `${Math.round((base.totalInterest / c.amount) * 100)}% of the amount borrowed`],
+      ['Total paid', money(base.totalPaid), `over ${duration(base.months)}`],
+      ['Paid off', fmtMonth(base.payoffMonth), duration(base.months)],
+    ];
+    if (fast) {
+      tiles.push(['With extra payments', fmtMonth(fast.payoffMonth), `${duration(base.months - fast.months)} sooner`]);
+      tiles.push(['Interest saved', money(base.totalInterest - fast.totalInterest), `paying ${money(base.payment + c.extra)} a month`]);
+    }
+    $('#calc-kpis').innerHTML = tiles.map(([k, v, sub]) => `<div class="kpi"><div class="kpi-label">${esc(k)}</div><div class="kpi-value">${esc(v)}</div><div class="kpi-sub">${esc(sub)}</div></div>`).join('');
+
+    const { labels, series } = yearlyBalances(fast ? [base, fast] : [base], c.amount);
+    Charts.lines($('#calc-chart'), {
+      labels,
+      series: series.map((values, k) => ({ name: k ? 'With extra payments' : 'Owed', color: seriesColor(k ? 2 : 1), values })),
+      fmt: money, fmtAxis: compact, label: 'Amount owed over time',
+    });
+
+    const shown = fast || base;
+    if ($('#calc-table-mode').value === 'month') {
+      $('#calc-table').innerHTML = `<table class="report-table calc-table"><thead><tr><th>Month</th><th class="num">Rate</th><th class="num">Payment</th><th class="num">Interest</th><th class="num">Principal</th><th class="num">Owed after</th></tr></thead>
+        <tbody>${shown.rows.map((r) => `<tr><td>${esc(fmtMonth(r.month))}</td><td class="num">${esc(String(r.rate))}%</td><td class="num">${esc(money(r.payment))}</td>
+          <td class="num">${esc(money(r.interest))}</td><td class="num">${esc(money(r.principal))}</td><td class="num">${esc(money(r.balance))}</td></tr>`).join('')}</tbody></table>`;
+    } else {
+      $('#calc-table').innerHTML = `<table class="report-table calc-table"><thead><tr><th>Year</th><th class="num">Paid</th><th class="num">Interest</th><th class="num">Principal</th><th class="num">Owed at the end</th></tr></thead>
+        <tbody>${L.byYear(shown.rows).map((y) => `<tr><td>${esc(y.year)}</td><td class="num">${esc(money(y.payment))}</td>
+          <td class="num">${esc(money(y.interest))}</td><td class="num">${esc(money(y.principal))}</td><td class="num">${esc(money(y.balance))}</td></tr>`).join('')}</tbody></table>`;
+    }
+  }
+
+  let calcTimer = null;
+  $('#calc-form').addEventListener('input', () => {
+    clearTimeout(calcTimer);
+    calcTimer = setTimeout(renderCalculator, 150);
+  });
+  $('#calc-form').addEventListener('submit', (ev) => ev.preventDefault());
+  $('#calc-table-mode').addEventListener('change', renderCalculator);
+
+  function addRateChangeRow(year = '', rate = '') {
+    const row = document.createElement('div');
+    row.className = 'rc-row';
+    row.innerHTML = `<label>After year <input type="number" name="rcYear" min="1" max="50" value="${esc(year)}"></label>
+      <label>New rate (%) <input type="text" name="rcRate" inputmode="decimal" value="${esc(rate)}"></label>
+      <button type="button" class="icon" data-action="remove-rate-change" aria-label="Remove this rate change">&times;</button>`;
+    $('#rate-change-rows').appendChild(row);
+  }
+
+  // Loan details dialog. accountId: edit that account; null: track a new one.
+  let editingLoan = null;
+  function openLoan(accountId, prefill = null) {
+    const f = $('#loan-form');
+    f.reset();
+    $('#loan-error').hidden = true;
+    editingLoan = accountId;
+    const acct = accountId && budget.accounts.find((a) => a.id === accountId);
+    const free = budget.accounts.filter((a) => a.offBudget && !a.loan);
+    f.account.innerHTML = `${free.map((a) => `<option value="${a.id}">${esc(a.name)} (owes ${esc(money(-B.accountBalance(budget, a.id)))})</option>`).join('')}
+      <option value="new">A new account…</option>`;
+    if (prefill) f.account.value = 'new';
+    $('#loan-account-field').hidden = !!acct;
+    $('#loan-remove').hidden = !(acct && acct.loan);
+    $('#loan-title').textContent = acct ? `${acct.name}: loan details` : 'Track a loan';
+    const loan = acct && acct.loan;
+    const src = prefill || loan || {};
+    f.rate.value = src.rate != null ? String(src.rate) : '';
+    f.payment.value = src.payment ? B.toInput(src.payment) : '';
+    f.original.value = src.original ? B.toInput(src.original) : '';
+    f.startDate.value = src.startDate || '';
+    f.name.value = prefill ? prefill.name || '' : '';
+    f.owed.value = prefill && prefill.owed ? B.toInput(prefill.owed) : '';
+    syncLoanFields();
+    $('#loan-dialog').showModal();
+  }
+  function syncLoanFields() {
+    const isNew = !editingLoan && $('#loan-form').account.value === 'new';
+    $('#loan-name-field').hidden = !isNew;
+    $('#loan-owed-field').hidden = !isNew;
+  }
+  $('#loan-form').account.addEventListener('change', syncLoanFields);
+
+  $('#loan-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    const fail = (msg) => { $('#loan-error').textContent = msg; $('#loan-error').hidden = false; };
+    let loan;
+    try {
+      const original = f.original.value.trim() ? B.parseMoney(f.original.value) : null;
+      if (Number.isNaN(original)) throw new Error('Original amount must be an amount like 150000.00.');
+      loan = L.normalizeLoan({ rate: parseRate(f.rate.value), payment: B.parseMoney(f.payment.value), original, startDate: f.startDate.value || null });
+    } catch (err) {
+      fail(err.message);
+      return;
+    }
+    let target = editingLoan && budget.accounts.find((a) => a.id === editingLoan);
+    if (!target) {
+      if (f.account.value === 'new') {
+        const owed = B.parseMoney(f.owed.value);
+        if (!f.name.value.trim()) { fail('Give the loan a name.'); return; }
+        if (Number.isNaN(owed) || owed <= 0) { fail('Enter how much is owed today.'); return; }
+        target = B.addAccount(budget, { name: f.name.value, balance: -owed, date: todayISO(), offBudget: true });
+      } else {
+        target = budget.accounts.find((a) => a.id === f.account.value);
+      }
+    }
+    if (!target) { fail('Pick an account.'); return; }
+    target.loan = loan;
+    $('#loan-dialog').close();
+    attempt(() => {});
+  });
 
   // Backup
 

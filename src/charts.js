@@ -62,6 +62,20 @@
     return { lo, hi, ticks };
   }
 
+  // Which x labels to draw so they never overlap: every `step`-th one, and the
+  // last one in place of a neighbour that would crowd it.
+  function labelIndices(count, plotW, minGap = 52) {
+    const step = Math.max(1, Math.ceil(count / Math.max(1, Math.floor(plotW / minGap))));
+    const out = [];
+    for (let i = 0; i < count; i += step) out.push(i);
+    const last = count - 1;
+    if (out[out.length - 1] !== last) {
+      if (out.length > 1 && last - out[out.length - 1] < step * 0.6) out.pop();
+      out.push(last);
+    }
+    return new Set(out);
+  }
+
   function frame(container, { label, height = H }) {
     container.innerHTML = '';
     const width = Math.max(280, container.clientWidth || 600);
@@ -110,10 +124,13 @@
     yAxis(g, sc, f.plotW, f.plotH, fmtAxis);
     const yOf = (v) => M.top + f.plotH - ((v - sc.lo) / (sc.hi - sc.lo)) * f.plotH;
     const band = f.plotW / labels.length;
+    const shownLabels = labelIndices(labels.length, f.plotW);
     labels.forEach((lab, i) => {
       const cx = M.left + band * i + band / 2;
-      const t = el('text', { x: cx, y: f.height - 10, class: 'chart-axis', 'text-anchor': 'middle' }, g);
-      t.textContent = lab;
+      if (shownLabels.has(i)) {
+        const t = el('text', { x: cx, y: f.height - 10, class: 'chart-axis', 'text-anchor': 'middle' }, g);
+        t.textContent = lab;
+      }
       if (stacked) {
         const w = Math.min(24, band * 0.6);
         let acc = 0;
@@ -157,7 +174,9 @@
     const yOf = (v) => M.top + f.plotH - ((v - sc.lo) / (sc.hi - sc.lo)) * f.plotH;
     const step = labels.length > 1 ? f.plotW / (labels.length - 1) : 0;
     const xOf = (i) => M.left + (labels.length > 1 ? step * i : f.plotW / 2);
+    const shownLabels = labelIndices(labels.length, f.plotW);
     labels.forEach((lab, i) => {
+      if (!shownLabels.has(i)) return;
       const t = el('text', { x: xOf(i), y: f.height - 10, class: 'chart-axis', 'text-anchor': i === 0 ? 'start' : i === labels.length - 1 ? 'end' : 'middle' }, g);
       t.textContent = lab;
     });

@@ -29,6 +29,7 @@
       <button type="button" class="active" data-view="budget">Budget</button>
       <button type="button" data-view="accounts">Accounts</button>
       <button type="button" data-view="reports">Reports</button>
+      <button type="button" data-view="loans">Loans</button>
     </nav>
     <nav class="month-nav" aria-label="Month">
       <button type="button" data-action="prev-month" aria-label="Previous month">&lsaquo;</button>
@@ -203,6 +204,7 @@
           <div><div class="label">Reconciled</div><div class="hint" id="acct-reconciled"></div></div>
           <div class="row">
             <button type="button" id="acct-reconcile" data-action="reconcile">Reconcile</button>
+            <button type="button" id="acct-loan" data-action="edit-loan" hidden>Loan details</button>
           </div>
         </div>
       </div>
@@ -253,6 +255,52 @@
     <section class="panel">
       <h2>Spending by envelope</h2>
       <div class="table-wrap" id="report"></div>
+    </section>
+  </section>
+
+  <section id="view-loans" class="layout single" hidden>
+    <div class="report-toolbar">
+      <h2>Loans</h2>
+      <button type="button" data-action="new-loan">Track a loan</button>
+    </div>
+    <div id="loan-list" class="loan-list"></div>
+
+    <section class="panel calc" id="calculator">
+      <div class="panel-head">
+        <h2>Loan calculator</h2>
+        <span class="hint">Try amounts, rates and extra payments. Nothing is saved until you choose to.</span>
+      </div>
+      <form id="calc-form" class="calc-grid" autocomplete="off">
+        <label>Amount <input type="text" name="amount" inputmode="decimal" value="200000"></label>
+        <label>Interest rate (% a year) <input type="text" name="rate" inputmode="decimal" value="3.5"></label>
+        <label>Term (years) <input type="number" name="years" min="1" max="50" value="30"></label>
+        <label>First payment <input type="month" name="start"></label>
+        <label>Extra each month <input type="text" name="extra" inputmode="decimal" placeholder="0.00"></label>
+        <label>Rate
+          <select name="kind">
+            <option value="fixed">Fixed</option>
+            <option value="variable">Variable</option>
+          </select>
+        </label>
+        <div class="rate-changes" id="rate-changes" hidden>
+          <p class="hint">Rate changes. After each change the payment is recalculated over the time left, as banks do for variable loans.</p>
+          <div id="rate-change-rows"></div>
+          <button type="button" data-action="add-rate-change">Add a rate change</button>
+        </div>
+      </form>
+      <div class="kpis calc-kpis" id="calc-kpis"></div>
+      <div class="chart" id="calc-chart"></div>
+      <div class="calc-actions row">
+        <button type="button" data-action="calc-track" class="primary">Track this as a loan</button>
+        <button type="button" data-action="calc-envelope">Create an envelope for the payment</button>
+        <label class="inline-label">Table
+          <select id="calc-table-mode">
+            <option value="year">By year</option>
+            <option value="month">By month</option>
+          </select>
+        </label>
+      </div>
+      <div class="table-wrap" id="calc-table"></div>
     </section>
   </section>
   </div>
@@ -331,7 +379,31 @@
     </form>
   </dialog>
 
+  <dialog id="loan-dialog" class="target-dialog">
+    <form id="loan-form" class="stack" autocomplete="off">
+      <h2 id="loan-title">Loan details</h2>
+      <p id="loan-error" class="auth-message" hidden></p>
+      <label id="loan-account-field">Account
+        <select name="account"></select>
+      </label>
+      <label id="loan-name-field" hidden>Name <input type="text" name="name" maxlength="60" placeholder="Mortgage"></label>
+      <label id="loan-owed-field" hidden>Amount owed today <input type="text" name="owed" inputmode="decimal" placeholder="0.00"></label>
+      <label>Interest rate (% a year) <input type="text" name="rate" inputmode="decimal" required placeholder="3.5"></label>
+      <label>Monthly payment <input type="text" name="payment" inputmode="decimal" required placeholder="0.00"></label>
+      <label>Original amount <span class="optional">(to show how much is repaid and the interest paid so far)</span>
+        <input type="text" name="original" inputmode="decimal" placeholder="0.00"></label>
+      <label>Start date <span class="optional">(optional)</span> <input type="date" name="startDate"></label>
+      <p class="hint">Record payments as transfers from your checking account to the loan account. If your bank adds interest to the balance, use "Record interest" on the Loans page each month.</p>
+      <div class="row">
+        <button type="submit" class="primary">Save</button>
+        <button type="button" data-action="close-loan">Cancel</button>
+        <button type="button" class="danger" id="loan-remove" data-action="remove-loan">Stop tracking</button>
+      </div>
+    </form>
+  </dialog>
+
   <script src="src/budget.js"></script>
+  <script src="src/loans.js"></script>
   <script src="src/charts.js"></script>
   <script src="src/app.js"></script>
 </body>
