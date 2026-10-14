@@ -40,6 +40,7 @@
   let account = null;
   let revision = 0; // server revision this copy is based on
   let currentView = 'budget';
+  let openAccountId = null;
   let editingTx = null;
 
   // API
@@ -240,8 +241,14 @@
     renderAccounts();
     renderRecurring();
     renderReport();
-    for (const v of ['budget', 'accounts', 'reports']) $(`#view-${v}`).hidden = v !== currentView;
-    document.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === currentView));
+    if (currentView === 'account' && !budget.accounts.some((a) => a.id === openAccountId)) currentView = 'accounts';
+    for (const v of ['budget', 'accounts', 'account', 'reports']) $(`#view-${v}`).hidden = v !== currentView;
+    const tab = currentView === 'account' ? 'accounts' : currentView;
+    document.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === tab));
+    // The transaction form lives on the budget page and on an account page.
+    const formHome = currentView === 'account' ? $('#account-side') : $('#budget-side');
+    if ($('#tx-panel').parentElement !== formHome) formHome.prepend($('#tx-panel'));
+    if (currentView === 'account') renderAccountPage();
   }
 
   const accountName = (id) => (budget.accounts.find((a) => a.id === id) || {}).name || 'Unknown account';
@@ -259,7 +266,7 @@
       const bal = B.accountBalance(budget, a.id);
       const rec = a.reconciledAt ? `Reconciled ${esc(a.reconciledAt)} at ${esc(money(a.reconciledBalance))}` : 'Never reconciled';
       return `<div class="account-row">
-        <div><div class="env-name">${esc(a.name)}${a.offBudget ? '<span class="badge off">Off budget</span>' : ''}</div><div class="goal">${rec}</div></div>
+        <div><div class="env-name"><button type="button" class="env-link" data-action="open-account" data-id="${a.id}">${esc(a.name)}</button>${a.offBudget ? '<span class="badge off">Off budget</span>' : ''}</div><div class="goal">${rec}</div></div>
         <div class="acct-bal ${bal < 0 ? 'neg' : ''}">${esc(money(bal))}</div>
         <div class="row acct-actions">
           <button type="button" data-action="reconcile" data-id="${a.id}">Reconcile</button>
@@ -268,6 +275,58 @@
         </div>
       </div>`;
     }).join('') : '<p class="empty">No accounts yet. Add the bank accounts and cash you budget with.</p>';
+  }
+
+  function periodStart(period) {
+    const today = todayISO();
+    if (period === 'month') return `${month}-01`;
+    if (period === '3m') return `${B.shiftMonth(today.slice(0, 7), -2)}-01`;
+    if (period === 'year') return `${today.slice(0, 4)}-01-01`;
+    return null;
+  }
+
+  function renderAccountPage() {
+    const acct = budget.accounts.find((a) => a.id === openAccountId);
+    const bal = B.accountBalance(budget, acct.id);
+    $('#acct-title').innerHTML = `${esc(acct.name)}${acct.offBudget ? '<span class="badge off">Off budget</span>' : ''}`;
+    $('#acct-balance').textContent = money(bal);
+    $('#acct-balance').classList.toggle('neg', bal < 0);
+    // Imported budgets have reconciled transactions but no reconcile date yet.
+    const lastReconciled = budget.transactions
+      .filter((t) => t.accountId === acct.id && t.reconciled)
+      .reduce((d, t) => (t.date > d ? t.date : d), '');
+    $('#acct-reconciled').textContent = acct.reconciledAt
+      ? `${acct.reconciledAt} at ${money(acct.reconciledBalance)}`
+      : lastReconciled ? `Up to ${lastReconciled}` : 'Never';
+    $('#acct-reconcile').dataset.id = acct.id;
+
+    const names = Object.fromEntries(budget.envelopes.map((e) => [e.id, e.name]));
+    const from = periodStart($('#acct-period').value);
+    const to = $('#acct-period').value === 'month' ? `${month}-31` : null;
+    const q = $('#acct-search').value.trim().toLowerCase();
+    const rows = B.accountRegister(budget, acct.id).reverse().filter(({ t }) => {
+      if (from && t.date < from) return false;
+      if (to && t.date > to) return false;
+      if (!q) return true;
+      const where = t.envelopeId ? names[t.envelopeId] || '' : '';
+      return `${t.payee} ${t.note} ${where}`.toLowerCase().includes(q);
+    });
+    $('#acct-count').textContent = `${rows.length} transaction${rows.length === 1 ? '' : 's'}`;
+    $('#register-rows').innerHTML = rows.length ? rows.map(({ t, balance }) => {
+      const where = t.envelopeId ? names[t.envelopeId] || 'Deleted envelope'
+        : t.transferId ? `Transfer · ${accountName(t.toAccountId)}`
+        : B.countsAsIncome(budget, t) ? 'Ready to Assign' : '—';
+      return `<tr>
+        <td class="nowrap">${esc(t.date)}</td>
+        <td><button type="button" class="env-link" data-action="edit-tx" data-id="${t.id}">${esc(t.payee || (t.amount > 0 ? 'Income' : 'Spending'))}</button>
+          ${t.note ? `<div class="goal">${esc(t.note)}</div>` : ''}</td>
+        <td>${esc(where)}</td>
+        <td class="num ${t.amount > 0 ? 'in' : ''}">${t.amount > 0 ? '+' : ''}${esc(money(t.amount))}</td>
+        <td class="num ${balance < 0 ? 'neg' : ''}">${esc(money(balance))}</td>
+        <td class="num">${t.reconciled ? '<span title="Reconciled">✓</span>' : ''}
+          <button type="button" class="icon" data-action="delete-tx" data-id="${t.id}" aria-label="Delete transaction">&times;</button></td>
+      </tr>`;
+    }).join('') : '<tr><td colspan="6" class="empty">No transactions match.</td></tr>';
   }
 
   const FREQ_LABEL = { weekly: 'week', monthly: 'month', yearly: 'year' };
@@ -501,6 +560,15 @@
         if (confirm('Delete this account?')) attempt(() => B.deleteAccount(budget, btn.dataset.id));
         break;
       case 'reconcile': openReconcile(btn.dataset.id); break;
+      case 'open-account':
+        openAccountId = btn.dataset.id;
+        currentView = 'account';
+        $('#acct-search').value = '';
+        if (!editingTx) $('#tx-account').value = openAccountId;
+        render();
+        window.scrollTo(0, 0);
+        break;
+      case 'back-to-accounts': currentView = 'accounts'; render(); break;
       case 'close-reconcile': $('#reconcile-dialog').close(); break;
       case 'close-target': $('#target-dialog').close(); break;
       case 'export': exportBackup(); break;
@@ -579,6 +647,8 @@
     } else if (t.id === 'currency') {
       budget.currency = t.value;
       attempt(() => {});
+    } else if (t.id === 'acct-period') {
+      renderAccountPage();
     } else if (t.id === 'report-months') {
       renderReport();
     } else if (t.id === 'density') {
@@ -593,6 +663,8 @@
       t.value = '';
     }
   });
+
+  $('#acct-search').addEventListener('input', () => renderAccountPage());
 
   // Flush pending changes when the tab is hidden, e.g. before the browser closes it.
   document.addEventListener('visibilitychange', async () => {

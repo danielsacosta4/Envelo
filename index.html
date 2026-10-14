@@ -65,8 +65,8 @@
       <p id="empty" class="empty" hidden>No envelopes yet. Add one on the right to get started.</p>
     </section>
 
-    <aside class="side">
-      <section class="panel">
+    <aside class="side" id="budget-side">
+      <section class="panel" id="tx-panel">
         <h2 id="tx-heading">Add transaction</h2>
         <form id="tx-form" class="stack" autocomplete="off">
           <div class="segmented" role="radiogroup" aria-label="Type">
@@ -191,6 +191,41 @@
         <p class="hint">Add one from the Budget page with the Repeat option.</p>
       </section>
     </aside>
+  </section>
+
+  <section id="view-account" class="layout" hidden>
+    <section class="panel account-page">
+      <div class="account-head">
+        <button type="button" class="icon-text" data-action="back-to-accounts">← All accounts</button>
+        <h2 class="account-title" id="acct-title"></h2>
+        <div class="account-summary">
+          <div><div class="label">Balance</div><div class="acct-bal" id="acct-balance"></div></div>
+          <div><div class="label">Reconciled</div><div class="hint" id="acct-reconciled"></div></div>
+          <div class="row">
+            <button type="button" id="acct-reconcile" data-action="reconcile">Reconcile</button>
+          </div>
+        </div>
+      </div>
+      <div class="register-filters">
+        <label class="inline-label">Search <input type="search" id="acct-search" placeholder="Payee, envelope or note"></label>
+        <label class="inline-label">Show
+          <select id="acct-period">
+            <option value="all">All dates</option>
+            <option value="month">The month above</option>
+            <option value="3m">Last 3 months</option>
+            <option value="year">This year</option>
+          </select>
+        </label>
+        <span class="hint" id="acct-count"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="register">
+          <thead><tr><th>Date</th><th>Payee</th><th>Envelope</th><th class="num">Amount</th><th class="num">Balance</th><th></th></tr></thead>
+          <tbody id="register-rows"></tbody>
+        </table>
+      </div>
+    </section>
+    <aside class="side" id="account-side"></aside>
   </section>
 
   <section id="view-reports" class="layout single" hidden>

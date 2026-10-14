@@ -257,6 +257,19 @@
       .reduce((sum, t) => sum + t.amount, 0);
   }
 
+  // Every transaction in an account, oldest first, with the balance after it.
+  function accountRegister(b, id) {
+    const rows = b.transactions
+      .map((t, i) => ({ t, i }))
+      .filter(({ t }) => t.accountId === id)
+      .sort((x, y) => (x.t.date < y.t.date ? -1 : x.t.date > y.t.date ? 1 : x.i - y.i));
+    let balance = 0;
+    return rows.map(({ t }) => {
+      balance += t.amount;
+      return { t, balance };
+    });
+  }
+
   function defaultAccountId(b) {
     if (!Array.isArray(b.accounts)) b.accounts = [];
     return (b.accounts[0] || addAccount(b, { name: 'Main account' })).id;
@@ -795,7 +808,7 @@
     setTarget, normalizeTarget, fundAllTargets, weekdaysInMonth,
     updateEnvelope, deleteEnvelope, updateTransaction, transactionKind,
     addAccount, updateAccount, deleteAccount, accountBalance, reconcileAccount, ensureAccounts,
-    isOnBudget, transferNeedsEnvelope, countsAsIncome, isHidden, setGroupHidden,
+    isOnBudget, transferNeedsEnvelope, countsAsIncome, isHidden, setGroupHidden, accountRegister,
     addRecurring, removeRecurring, applyRecurring, nextRecurringDate, report,
     parseCsv, importTransactionsCsv,
   };

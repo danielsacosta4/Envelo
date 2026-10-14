@@ -412,3 +412,14 @@ test('hidden envelopes and groups stay in totals but not in Fund all targets', (
   B.setGroupHidden(b, 'Daily', false);
   assert.equal(B.envelopeStatus(b, c.id, '2026-10').hidden, false);
 });
+
+test('account register lists transactions oldest first with a running balance', () => {
+  const b = B.create();
+  const chk = B.addAccount(b, { name: 'Checking', balance: 10000, date: '2026-10-01' });
+  const env = B.addEnvelope(b, { name: 'Food' });
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-05', amount: 2500, envelopeId: env.id, accountId: chk.id });
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-03', amount: 1000, envelopeId: env.id, accountId: chk.id });
+  const reg = B.accountRegister(b, chk.id);
+  assert.deepEqual(reg.map((r) => r.t.date), ['2026-10-01', '2026-10-03', '2026-10-05']);
+  assert.deepEqual(reg.map((r) => r.balance), [10000, 9000, 6500]);
+});
