@@ -1,0 +1,151 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Envelo Editorial</title>
+<style>* { box-sizing: border-box; } body { margin: 0; } button { font: inherit; cursor: pointer; } ul { list-style: none; margin: 0; padding: 0; }
+
+.app { max-width: 1280px; margin: 0 auto; min-height: 100vh; position: relative; padding-bottom: 90px; }
+.row1 { display: flex; align-items: center; gap: 28px; }
+.tabs { display: flex; gap: 6px; }
+.tabs a { padding: 8px 14px; }
+.me { margin-left: auto; }
+.row2 { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; margin-top: 26px; }
+.month { display: flex; align-items: center; gap: 14px; }
+.month h1 { margin: 0; }
+.rta { text-align: right; }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 28px; padding: 28px 32px; }
+.colh, .env { display: grid; grid-template-columns: minmax(0, 1fr) 120px 110px 140px 130px; align-items: center; gap: 12px; }
+.colh span:not(:first-child), .env > div:not(.nm) { text-align: right; }
+.nm { display: flex; gap: 12px; align-items: flex-start; }
+.gh { display: flex; align-items: center; gap: 10px; }
+.gt { display: none; }
+.bar, .gbar { height: 8px; margin-top: 8px; max-width: 260px; }
+.bar i, .gbar i { display: block; height: 100%; }
+.side { display: flex; flex-direction: column; gap: 20px; }
+.tx li { display: flex; justify-content: space-between; gap: 10px; padding: 10px 0; }
+.tx li span { display: block; }
+.fab { position: fixed; right: 32px; bottom: 28px; }
+
+body { background: #f6f1e7; color: #1b1a17; font: 500 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.app { background: #f6f1e7; }
+.top { padding: 26px 48px 34px; background: linear-gradient(180deg, #ff5a3c 0, #ff5a3c 100%); color: #fff; }
+.brand { font: italic 400 30px/1 Georgia, serif; }
+.tabs a { font: 700 14px/1 system-ui; color: #fff; opacity: .78; border-bottom: 3px solid transparent; padding: 8px 4px; margin-right: 14px; }
+.tabs a.on { opacity: 1; border-bottom-color: #fff; }
+.me { opacity: .8; font-size: 13px; }
+.row2 { margin-top: 34px; }
+.month h1 { font: italic 400 104px/0.85 Georgia, serif; letter-spacing: -.03em; }
+.month h1 span { display: block; font: 800 14px/1.4 system-ui; letter-spacing: .3em; text-transform: uppercase; font-style: normal; opacity: .8; margin-top: 10px; }
+.arr { background: none; border: 2px solid rgba(255,255,255,.7); color: #fff; width: 40px; height: 40px; border-radius: 50%; font-size: 20px; }
+.rta .l { font: 800 12px/1 system-ui; letter-spacing: .24em; text-transform: uppercase; }
+.rta .v { font: italic 400 96px/1 Georgia, serif; letter-spacing: -.03em; }
+.rta .tl { font-size: 14px; font-weight: 600; margin-top: 4px; }
+.fundall { margin-left: 10px; background: #fff; color: #ff5a3c; border: none; border-radius: 999px; padding: 7px 14px; font-weight: 800; font-size: 13px; }
+.stats { margin: 0 48px; transform: translateY(-1px); background: #1b1a17; color: #f6f1e7; }
+.stats div { padding: 18px 24px; border-right: 1px solid #3a3833; }
+.stats span { display: block; font: 700 11px/1 system-ui; letter-spacing: .2em; text-transform: uppercase; opacity: .6; }
+.stats b { font: 400 30px/1.4 Georgia, serif; } .stats .bad { color: #ff8a73; font-style: italic; }
+.grid { padding: 40px 48px; gap: 48px; grid-template-columns: minmax(0,1fr) 300px; }
+.colh { padding: 0 0 12px; font: 700 11px/1 system-ui; letter-spacing: .2em; text-transform: uppercase; color: #8a8375; border-bottom: 2px solid #1b1a17; }
+.group { margin-top: 30px; }
+.gh { padding: 0 0 10px; border-bottom: 1px solid #1b1a17; }
+.gn { font: italic 400 34px/1 Georgia, serif; }
+.group .gh::before { content: ""; width: 14px; height: 14px; border-radius: 50%; display: inline-block; order: -1; }
+.group.coral .gh::before { background: #ff5a3c; } .group.blue .gh::before { background: #3d7bff; } .group.mint .gh::before { background: #1faf7a; }
+.chev { display: none; }
+.env { padding: 16px 0; border-bottom: 1px solid #dcd3c0; }
+.em { font-size: 22px; width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; flex: none; }
+.group.coral .em { background: #ffd9cf; } .group.blue .em { background: #dbe6ff; } .group.mint .em { background: #cdf0e1; }
+.n { font: 700 16px/1.2 system-ui; } .sub { font-size: 13px; color: #8a8375; margin-top: 2px; } .sub.bad { color: #c2261b; }
+.bar { background: #e7dfcd; height: 5px; border-radius: 3px; } .bar i { border-radius: 3px; background: #1b1a17; }
+.bar.full i { background: #1f8a5b; } .bar.partial i { background: #e3a008; } .bar.none i { background: #ff5a3c; }
+.inp { display: inline-block; min-width: 96px; padding: 6px 2px; border-bottom: 2px solid #1b1a17; font: 400 20px/1 Georgia, serif; }
+.inp.full { border-color: #1f8a5b; } .inp.partial { border-color: #e3a008; } .inp.none { border-color: #ff5a3c; }
+.sp { font: 400 19px/1 Georgia, serif; color: #8a8375; }
+.pill { display: inline-block; padding: 7px 14px; border-radius: 999px; font: 400 20px/1 Georgia, serif; }
+.pill.ok { background: #cdf0e1; color: #0f5c3c; } .pill.neg { background: #ff5a3c; color: #fff; font-style: italic; } .pill.zero { background: #ece5d6; color: #8a8375; }
+.fund { background: #1b1a17; color: #fff; border: none; border-radius: 999px; padding: 8px 14px; font-weight: 700; font-size: 12.5px; }
+.badge-done { color: #1f8a5b; font-weight: 700; font-size: 13px; }
+.card { padding: 0 0 22px; border-bottom: 2px solid #1b1a17; }
+.card h2 { margin: 0 0 12px; font: 700 11px/1 system-ui; letter-spacing: .2em; text-transform: uppercase; color: #8a8375; }
+.tx li { border-bottom: 1px solid #dcd3c0; } .tx li span { font-size: 12.5px; color: #8a8375; } .tx em { font: 400 18px/1 Georgia, serif; font-style: normal; } .tx em.in { color: #1f8a5b; }
+.more { display: inline-block; margin-top: 10px; font-weight: 700; color: #ff5a3c; }
+.gp { font: italic 400 76px/0.9 Georgia, serif; color: #1f8a5b; } .gp small { font-size: 30px; }
+.gbar { background: #e7dfcd; height: 8px; border-radius: 4px; max-width: none; } .gbar i { background: #1f8a5b; border-radius: 4px; }
+.lv { font: italic 400 48px/1 Georgia, serif; color: #6250d6; }
+.card p { margin: 10px 0 0; color: #5d574b; }
+.fab { background: #ff5a3c; color: #fff; border: none; border-radius: 999px; padding: 18px 26px; font: 800 16px/1 system-ui; box-shadow: 0 12px 30px rgba(255,90,60,.45); }
+</style></head><body class="vb"><div class="app">
+<header class="top">
+  <div class="row1"><div class="brand">Envelo</div>
+    <nav class="tabs"><a class="on">Budget</a><a>Accounts</a><a>Reports</a><a>Goals</a><a>Loans</a></nav>
+    <div class="me">geral@…</div></div>
+  <div class="row2">
+    <div class="month"><button class="arr">‹</button><h1>October <span>2026</span></h1><button class="arr">›</button></div>
+    <div class="rta"><div class="l">Ready to assign</div><div class="v">€652.40</div>
+      <div class="tl">Targets need €212.00 <button class="fundall">Fund all targets</button></div></div>
+  </div>
+</header>
+<div class="stats"><div><span>Assigned</span><b>€850.00</b></div><div><span>Spent</span><b>€255.50</b></div><div><span>Available</span><b>€1,394.40</b></div><div><span>Overspent</span><b class="bad">€18.40</b></div></div>
+<main class="grid">
+  <div class="budget">
+    <div class="colh"><span>Envelope</span><span>Assigned</span><span>Spent</span><span>Available</span><span></span></div>
+    <section class="group coral">
+  <div class="gh"><span class="chev">▾</span><span class="gn">Usual Expenses</span><span class="gt">€3</span></div>
+  <div class="env full">
+  <div class="nm"><span class="em">🛒</span><div><div class="n">Supermercado</div><div class="sub">€200 every month</div><div class="bar full"><i style="width:100%"></i></div></div></div>
+  <div class="as"><span class="inp full">200.00</span></div>
+  <div class="sp">−€142.10</div>
+  <div class="av"><span class="pill ok">€57.90</span></div>
+  <div class="fd"><span class="badge-done">✓ Funded</span></div>
+</div><div class="env ">
+  <div class="nm"><span class="em">🍴</span><div><div class="n">Restauração</div><div class="sub bad">Overspent by €18.40</div></div></div>
+  <div class="as"><span class="inp ">60.00</span></div>
+  <div class="sp">−€78.40</div>
+  <div class="av"><span class="pill neg">−€18.40</span></div>
+  <div class="fd"></div>
+</div><div class="env partial">
+  <div class="nm"><span class="em">⛽</span><div><div class="n">Combustível</div><div class="sub">€120 every month</div><div class="bar partial"><i style="width:66%"></i></div></div></div>
+  <div class="as"><span class="inp partial">80.00</span></div>
+  <div class="sp">−€35.00</div>
+  <div class="av"><span class="pill ok">€45.00</span></div>
+  <div class="fd"><button class="fund">Assign €40</button></div>
+</div>
+</section><section class="group blue">
+  <div class="gh"><span class="chev">▾</span><span class="gn">Lua 🐱</span><span class="gt">€2</span></div>
+  <div class="env full">
+  <div class="nm"><span class="em">🍲</span><div><div class="n">Ração</div><div class="sub">€30 every month</div><div class="bar full"><i style="width:100%"></i></div></div></div>
+  <div class="as"><span class="inp full">30.00</span></div>
+  <div class="sp">€0.00</div>
+  <div class="av"><span class="pill ok">€30.00</span></div>
+  <div class="fd"><span class="badge-done">✓ Funded</span></div>
+</div><div class="env partial">
+  <div class="nm"><span class="em">💊</span><div><div class="n">Veterinário</div><div class="sub">Have €200</div><div class="bar partial"><i style="width:20%"></i></div></div></div>
+  <div class="as"><span class="inp partial">40.00</span></div>
+  <div class="sp">€0.00</div>
+  <div class="av"><span class="pill ok">€40.00</span></div>
+  <div class="fd"><button class="fund">Assign €20</button></div>
+</div>
+</section><section class="group mint">
+  <div class="gh"><span class="chev">▾</span><span class="gn">Poupanças</span><span class="gt">€2</span></div>
+  <div class="env partial">
+  <div class="nm"><span class="em">💰</span><div><div class="n">Poupanças</div><div class="sub">€2,000 by Mar 2027 · needs €152/mo</div><div class="bar partial"><i style="width:62%"></i></div></div></div>
+  <div class="as"><span class="inp partial">100.00</span></div>
+  <div class="sp">€0.00</div>
+  <div class="av"><span class="pill ok">€1,240.00</span></div>
+  <div class="fd"><button class="fund">Assign €52</button></div>
+</div><div class="env none">
+  <div class="nm"><span class="em">💸</span><div><div class="n">Investimentos</div><div class="sub">€100 every month</div><div class="bar none"><i style="width:0%"></i></div></div></div>
+  <div class="as"><span class="inp none">0.00</span></div>
+  <div class="sp">€0.00</div>
+  <div class="av"><span class="pill zero">€0.00</span></div>
+  <div class="fd"><button class="fund">Assign €100</button></div>
+</div>
+</section>
+  </div>
+  <aside class="side">
+    <section class="card tx"><h2>Latest</h2><ul><li><div><b>Lidl</b><span>Supermercado · Revolut</span></div><em class="">−€23.40</em></li><li><div><b>Salary</b><span>Ready to Assign · N26</span></div><em class="in">+€1,450.00</em></li><li><div><b>Galp</b><span>Combustível · Revolut</span></div><em class="">−€35.00</em></li></ul><a class="more">All transactions →</a></section>
+    <section class="card goal"><h2>Goal · Emergency fund</h2><div class="gp">62<small>%</small></div><div class="gbar"><i style="width:62%"></i></div><p>€1,240 of €2,000 · on track for Mar 2027</p></section>
+    <section class="card loan"><h2>Loan · Mortgage</h2><div class="lv">€148,420</div><p>Debt free in Oct 2049 · 31% repaid</p></section>
+  </aside>
+</main>
+<button class="fab">＋ Transaction</button>
+</div></body></html>
