@@ -392,3 +392,23 @@ test('off-budget accounts keep a balance but never touch the budget', () => {
   B.reconcileAccount(b, inv.id, 480000, '2026-10-05');
   assert.equal(B.readyToAssign(b, '2026-10'), 70000);
 });
+
+test('hidden envelopes and groups stay in totals but not in Fund all targets', () => {
+  const b = B.create();
+  const a = B.addEnvelope(b, { name: 'Old', group: 'Archive', target: { type: 'monthly', amount: 1000 } });
+  const c = B.addEnvelope(b, { name: 'Food', group: 'Daily', target: { type: 'monthly', amount: 2000 } });
+  B.addTransaction(b, { kind: 'income', date: '2026-10-01', amount: 10000 });
+  B.setAssigned(b, '2026-10', a.id, 500);
+  B.updateEnvelope(b, a.id, { name: 'Old', group: 'Archive', hidden: true });
+  assert.equal(B.envelopeStatus(b, a.id, '2026-10').hidden, true);
+  assert.equal(B.monthView(b, '2026-10').underfunded, 2000);
+  B.fundAllTargets(b, '2026-10');
+  assert.equal(B.assignedIn(b, '2026-10', a.id), 500);
+  assert.equal(B.assignedIn(b, '2026-10', c.id), 2000);
+  assert.equal(B.readyToAssign(b, '2026-10'), 7500);
+  B.setGroupHidden(b, 'Daily', true);
+  assert.equal(B.envelopeStatus(b, c.id, '2026-10').hidden, true);
+  assert.deepEqual(B.fromJSON(JSON.parse(JSON.stringify(b))).hiddenGroups, ['Daily']);
+  B.setGroupHidden(b, 'Daily', false);
+  assert.equal(B.envelopeStatus(b, c.id, '2026-10').hidden, false);
+});

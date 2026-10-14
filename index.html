@@ -41,6 +41,7 @@
 
   <div id="error" class="error" hidden></div>
 
+  <h1 class="print-title">Envelo · <span id="print-month"></span></h1>
   <main class="layout" id="view-budget">
     <section class="panel envelopes">
       <div class="panel-head">
@@ -127,6 +128,13 @@
             <option value="dark">Dark</option>
           </select>
         </label>
+        <label>Row size
+          <select id="density">
+            <option value="compact">Compact</option>
+            <option value="normal">Normal</option>
+            <option value="large">Large</option>
+          </select>
+        </label>
         <label>Currency
           <select id="currency">
             <option>USD</option><option>EUR</option><option>GBP</option><option>BRL</option>
@@ -141,6 +149,7 @@
         <button type="button" data-action="import-actual">Import from Actual Budget</button>
         <input type="file" id="import-actual-file" accept=".zip,application/zip,.csv,text/csv" hidden>
         <p class="hint import-hint">Use Actual's <strong>Settings → Export data</strong> (.zip) to bring over everything, including budgeted amounts. A transactions .csv adds transactions to your current budget.</p>
+        <button type="button" data-action="print">Print this month's budget</button>
         <button type="button" class="danger" data-action="reset">Erase all data</button>
       </section>
 
@@ -207,6 +216,9 @@
       <p id="target-error" class="auth-message" hidden></p>
       <label>Name <input type="text" name="envName" maxlength="60" required></label>
       <label>Group <input type="text" name="envGroup" maxlength="40" list="group-list"></label>
+      <label class="check"><input type="checkbox" name="envHidden">
+        <span>Hide this envelope <span class="optional">(it keeps its money and still counts in totals)</span></span>
+      </label>
       <label class="check"><input type="checkbox" name="carryOverspending">
         <span>Carry overspending to next month <span class="optional">(normally an overspent envelope starts the next month at zero and the overspending comes out of Ready to Assign)</span></span>
       </label>

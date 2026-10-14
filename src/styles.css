@@ -1,5 +1,10 @@
 /* Envelo: colour-blocked groups with editorial type (see design/blend.html) */
 :root {
+  --fund-full: #1f8a5b;
+  --fund-partial: #d99a00;
+  --fund-none: #e8590c;
+  --row-pad: 14px;
+  --row-font: 17px;
   --paper: #f4efe4;
   --card: #fbf8f1;
   --ink: #161616;
@@ -349,6 +354,59 @@ tr:not(.group) td { border-bottom: 1px solid var(--ink); }
 label.check { flex-direction: row !important; align-items: flex-start; gap: 8px !important; text-transform: none !important; letter-spacing: 0 !important; font: 600 13px/1.35 var(--sans) !important; color: var(--ink) !important; }
 label.check input { width: auto; margin-top: 2px; }
 
+/* Groups, hidden envelopes, funding state */
+.group-toggle {
+  border: none; background: none; padding: 0; color: inherit; cursor: pointer;
+  font: inherit; letter-spacing: inherit; text-transform: inherit; display: inline-flex; gap: 8px; align-items: center;
+}
+.group-toggle:hover { background: none; text-decoration: underline; }
+.chev { display: inline-block; width: 10px; }
+tr.group td.g-sum { font: 800 13px/1 var(--sans); letter-spacing: 0; text-transform: none; }
+tr.group td.g-sum.neg { color: var(--bad); }
+.icon-text { border: none; background: none; padding: 2px 6px; font: 800 11px/1 var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); cursor: pointer; }
+.icon-text:hover { background: none; color: var(--ink); text-decoration: underline; }
+tr.group .g-act button { opacity: 0; transition: opacity .15s; }
+tr.group:hover .g-act button, tr.group:focus-within .g-act button { opacity: 1; }
+tr.hidden-head td { background: var(--card); color: var(--muted); }
+tr.tone-hidden td { background: var(--card); opacity: .75; }
+@media screen { tr.is-collapsed { display: none !important; } }
+
+td.num input.fund-full { border-color: var(--fund-full); box-shadow: 0 0 0 2px color-mix(in srgb, var(--fund-full) 35%, transparent); }
+td.num input.fund-partial { border-color: var(--fund-partial); box-shadow: 0 0 0 2px color-mix(in srgb, var(--fund-partial) 35%, transparent); }
+td.num input.fund-none { border-color: var(--fund-none); box-shadow: 0 0 0 2px color-mix(in srgb, var(--fund-none) 35%, transparent); }
+
+.tbar { height: 8px; max-width: 260px; margin-top: 6px; border: 1px solid var(--ink); background: var(--card); }
+.tbar > i { display: block; height: 100%; background: var(--ink); transition: width .4s ease; }
+.tbar.fund-full > i { background: var(--fund-full); }
+.tbar.fund-partial > i { background: var(--fund-partial); }
+.tbar.fund-none > i { background: var(--fund-none); }
+
+/* Row size */
+:root[data-density="compact"] { --row-pad: 7px; --row-font: 15px; }
+:root[data-density="large"] { --row-pad: 20px; --row-font: 20px; }
+#envelope-rows td { padding-top: var(--row-pad); padding-bottom: var(--row-pad); font-size: var(--row-font); }
+:root[data-density="compact"] #envelope-rows .goal { display: inline; margin-left: 6px; }
+:root[data-density="compact"] #envelope-rows td.num input { padding: 3px 8px; }
+:root[data-density="large"] #envelope-rows .env-name { font-size: 18px; }
+
+/* Print: just the month's budget */
+.print-title { display: none; }
+@media print {
+  @page { margin: 14mm; }
+  :root { --paper: #fff; --card: #fff; --ink: #000; --muted: #444; --rule: #bbb; --coral-soft: #fff; --mint: #fff; --blue: #fff; }
+  body { background: #fff; }
+  .topbar .views, .month-nav button, .side, #error, .panel-head .hint, .fund-cell, .g-act, tr.hidden-head, tr.tone-hidden,
+  #view-accounts, #view-reports, .auth, dialog, .under-line button { display: none !important; }
+  .topbar { display: none !important; }
+  .print-title { display: block; font: 700 20px/1.2 var(--serif); margin: 0 0 10px; padding-bottom: 8px; border-bottom: 2px solid #000; }
+  .layout { display: block; padding: 0; }
+  .panel { border: none; box-shadow: none; }
+  tr.group td { background: #eee !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  td.num input { border: none; box-shadow: none !important; padding: 0; background: none; }
+  .tbar { border-color: #000; }
+  tr { break-inside: avoid; }
+}
+
 /* Phones */
 @media (max-width: 640px) {
   input, select { font-size: 16px; } /* stops iOS zooming on focus */
@@ -398,4 +456,16 @@ label.check input { width: auto; margin-top: 2px; }
   #report td.num::before { content: none; }
   #report .table-wrap, #report { overflow-x: auto; }
   #report .month-col { display: none; }
+}
+
+@media (max-width: 640px) {
+  tr.group { display: flex !important; align-items: stretch; gap: 0; padding: 0; }
+  tr.group td { display: flex !important; align-items: center; }
+  tr.group td.group-name { flex: 1; min-width: 0; }
+  tr.group .group-toggle { white-space: normal; text-align: left; overflow-wrap: anywhere; }
+  .env-cell, .goal { min-width: 0; overflow-wrap: anywhere; }
+  tr.group td.g-sum { display: none !important; }
+  tr.group td.g-sum:nth-child(4) { display: flex !important; }
+  tr.group .g-act button { opacity: 1; }
+  tr.hidden-head td { flex: 1; }
 }

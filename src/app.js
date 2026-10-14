@@ -24,6 +24,17 @@
   }
   applyTheme(readTheme());
 
+  // Row size: a per-device preference, like the theme.
+  const DENSITY_KEY = 'envelo.density';
+  function readDensity() {
+    try { return localStorage.getItem(DENSITY_KEY) || 'normal'; } catch { return 'normal'; }
+  }
+  function applyDensity(d) {
+    document.documentElement.dataset.density = d;
+    try { localStorage.setItem(DENSITY_KEY, d); } catch { /* applies until reload */ }
+  }
+  applyDensity(readDensity());
+
   let budget = B.create();
   let month = thisMonth();
   let account = null;
@@ -128,12 +139,56 @@
     }
   }
 
+  // Collapsed groups are a per-device preference.
+  const COLLAPSED_KEY = 'envelo.collapsed';
+  function readCollapsed() {
+    try { return JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '[]'); } catch { return []; }
+  }
+  function toggleCollapsed(name) {
+    const list = new Set(readCollapsed());
+    if (list.has(name)) list.delete(name); else list.add(name);
+    try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...list])); } catch { /* still toggles until reload */ }
+  }
+  let showHidden = false;
+
+  // Funding state of an envelope with a target: full, partial or none.
+  function fundState(e) {
+    if (!e.target) return '';
+    if (!e.underfunded) return 'fund-full';
+    return e.assigned > 0 || (e.progress || 0) > 0 ? 'fund-partial' : 'fund-none';
+  }
+
+  function envelopeRow(e, tone, isCollapsed, isHiddenRow = false) {
+    const availClass = e.available < 0 || e.underfunded ? 'neg' : e.available === 0 ? 'zero' : '';
+    const state = fundState(e);
+    const pct = Math.round((e.progress || 0) * 100);
+    const goal = e.target ? `<div class="goal ${e.underfunded ? 'short' : 'done'}">${esc(describeTarget(e))}
+        · ${e.underfunded ? `needs ${esc(money(e.needed))} this month` : 'funded'}</div>
+      <div class="tbar ${state}" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"
+        aria-label="${esc(e.name)} target ${pct}%"><i style="width:${pct}%"></i></div>` : '';
+    const fund = isHiddenRow
+      ? `<button type="button" class="fund" data-action="unhide-envelope" data-id="${e.id}">Unhide</button>`
+      : e.underfunded
+        ? `<button type="button" class="fund" data-action="fund" data-id="${e.id}" data-amount="${e.needed}">Assign ${esc(money(e.needed))}</button>`
+        : '';
+    return `<tr class="${tone}${isCollapsed ? ' is-collapsed' : ''}" data-env-row="${e.id}">
+      <td class="env-cell"><div class="env-name"><button type="button" class="env-link" data-action="edit-target" data-id="${e.id}" title="Edit envelope and target">${esc(e.name)}</button>${e.overspent ? '<span class="badge">Overspent</span>' : ''}</div>${goal}</td>
+      <td class="num" data-label="Assigned"><input type="text" inputmode="decimal" class="${state}" aria-label="Assigned to ${esc(e.name)}"
+          value="${B.toInput(e.assigned)}" data-env="${e.id}"></td>
+      <td class="num" data-label="Spent">${esc(money(e.activity))}</td>
+      <td class="num" data-label="Available"><span class="avail ${availClass}">${esc(money(e.available))}</span></td>
+      <td class="num fund-cell">${fund}</td>
+    </tr>`;
+  }
+
   function render() {
     const view = B.monthView(budget, month);
     const [y, m] = month.split('-').map(Number);
     $('#month-label').textContent = new Date(y, m - 1, 1).toLocaleString(undefined, { month: 'long', year: 'numeric' });
     $('#currency').value = budget.currency;
     $('#theme').value = readTheme();
+    $('#density').value = readDensity();
+    $('#print-month').textContent = `${$('#month-label').textContent} · Ready to assign ${money(view.readyToAssign)}`;
     $('#account').textContent = account ? account.email : '';
 
     const ready = $('#ready');
@@ -144,27 +199,38 @@
         <button type="button" data-action="fund-all">Fund all targets</button></div>` : ''}`;
 
     const rows = [];
-    view.groups.forEach((g, gi) => {
-      const tone = `tone-${gi % 3}`;
-      rows.push(`<tr class="group ${tone}"><td colspan="5">${esc(g.name)}</td></tr>`);
-      for (const e of g.envelopes) {
-        const availClass = e.available < 0 || e.underfunded ? 'neg' : e.available === 0 ? 'zero' : '';
-        const goal = e.target ? `<div class="goal ${e.underfunded ? 'short' : 'done'}">${esc(describeTarget(e))}
-            · ${e.underfunded ? `needs ${esc(money(e.needed))} this month` : 'funded'}</div>
-          <div class="tbar"><i style="width:${Math.round((e.progress || 0) * 100)}%"></i></div>` : '';
-        const fund = e.underfunded
-          ? `<button type="button" class="fund" data-action="fund" data-id="${e.id}" data-amount="${e.needed}">Assign ${esc(money(e.needed))}</button>`
-          : '';
-        rows.push(`<tr class="${tone}">
-          <td class="env-cell"><div class="env-name"><button type="button" class="env-link" data-action="edit-target" data-id="${e.id}" title="Set a target">${esc(e.name)}</button>${e.overspent ? '<span class="badge">Overspent</span>' : ''}</div>${goal}</td>
-          <td class="num" data-label="Assigned"><input type="text" inputmode="decimal" aria-label="Assigned to ${esc(e.name)}"
-              value="${B.toInput(e.assigned)}" data-env="${e.id}"></td>
-          <td class="num" data-label="Spent">${esc(money(e.activity))}</td>
-          <td class="num" data-label="Available"><span class="avail ${availClass}">${esc(money(e.available))}</span></td>
-          <td class="num fund-cell">${fund}</td>
-        </tr>`);
-      }
-    });
+    const collapsed = readCollapsed();
+    const hiddenRows = [];
+    let gi = 0;
+    for (const g of view.groups) {
+      const groupHidden = budget.hiddenGroups.includes(g.name);
+      const visible = g.envelopes.filter((e) => !e.hidden);
+      for (const e of g.envelopes) if (e.hidden) hiddenRows.push(e);
+      if (groupHidden || !visible.length) continue;
+      const tone = `tone-${gi++ % 3}`;
+      const isCollapsed = collapsed.includes(g.name);
+      const sum = (key) => visible.reduce((t, e) => t + e[key], 0);
+      const availSum = sum('available');
+      rows.push(`<tr class="group ${tone}">
+        <td class="group-name"><button type="button" class="group-toggle" data-action="toggle-group" data-group="${esc(g.name)}"
+            aria-expanded="${!isCollapsed}"><span class="chev">${isCollapsed ? '▸' : '▾'}</span>${esc(g.name)}</button></td>
+        <td class="num g-sum">${esc(money(sum('assigned')))}</td>
+        <td class="num g-sum">${esc(money(sum('activity')))}</td>
+        <td class="num g-sum ${availSum < 0 ? 'neg' : ''}">${esc(money(availSum))}</td>
+        <td class="num g-act"><button type="button" class="icon-text" data-action="hide-group" data-group="${esc(g.name)}" title="Hide this group">Hide</button></td>
+      </tr>`);
+      for (const e of visible) rows.push(envelopeRow(e, tone, isCollapsed));
+    }
+    const hiddenGroups = budget.hiddenGroups.filter((name) => budget.envelopes.some((e) => e.group === name));
+    if (hiddenRows.length) {
+      const showing = showHidden;
+      rows.push(`<tr class="group hidden-head">
+        <td colspan="5"><button type="button" class="group-toggle" data-action="toggle-hidden" aria-expanded="${showing}">
+          <span class="chev">${showing ? '▾' : '▸'}</span>Hidden (${hiddenRows.length})</button>
+          ${showing ? hiddenGroups.map((name) => `<button type="button" class="icon-text" data-action="show-group" data-group="${esc(name)}">Show group "${esc(name)}"</button>`).join(' ') : ''}
+        </td></tr>`);
+      if (showing) for (const e of hiddenRows) rows.push(envelopeRow(e, 'tone-hidden', false, true));
+    }
     $('#envelope-rows').innerHTML = rows.join('');
     $('#empty').hidden = budget.envelopes.length > 0;
 
@@ -247,8 +313,11 @@
   function renderEnvelopeOptions() {
     const sel = $('#tx-envelope');
     const current = sel.value;
-    sel.innerHTML = budget.envelopes.length
-      ? budget.envelopes.map((e) => `<option value="${e.id}">${esc(e.group)} · ${esc(e.name)}</option>`).join('')
+    // Hidden envelopes stay out of the picker, unless the transaction being
+    // edited already uses one.
+    const pickable = budget.envelopes.filter((e) => !B.isHidden(budget, e) || e.id === current);
+    sel.innerHTML = pickable.length
+      ? pickable.map((e) => `<option value="${e.id}">${esc(e.group)} · ${esc(e.name)}</option>`).join('')
       : '<option value="">Add an envelope first</option>';
     if (budget.envelopes.some((e) => e.id === current)) sel.value = current;
 
@@ -382,6 +451,25 @@
       }
       case 'edit-target': openTarget(btn.dataset.id); break;
       case 'edit-tx': editTransaction(btn.dataset.id); break;
+      case 'toggle-group': toggleCollapsed(btn.dataset.group); render(); break;
+      case 'toggle-hidden': showHidden = !showHidden; render(); break;
+      case 'hide-group':
+        if (confirm(`Hide the group "${btn.dataset.group}"? Its envelopes keep their money and still count in totals.`)) {
+          attempt(() => B.setGroupHidden(budget, btn.dataset.group, true));
+        }
+        break;
+      case 'show-group': attempt(() => B.setGroupHidden(budget, btn.dataset.group, false)); break;
+      case 'unhide-envelope': {
+        const env = budget.envelopes.find((x) => x.id === btn.dataset.id);
+        if (env) {
+          attempt(() => {
+            B.updateEnvelope(budget, env.id, { name: env.name, group: env.group, hidden: false });
+            B.setGroupHidden(budget, env.group, false);
+          });
+        }
+        break;
+      }
+      case 'print': window.print(); break;
       case 'cancel-edit': stopEditing(); break;
       case 'delete-envelope': {
         const f = $('#target-form');
@@ -493,6 +581,8 @@
       attempt(() => {});
     } else if (t.id === 'report-months') {
       renderReport();
+    } else if (t.id === 'density') {
+      applyDensity(t.value);
     } else if (t.id === 'theme') {
       applyTheme(t.value);
     } else if (t.id === 'import-actual-file') {
@@ -696,6 +786,7 @@
     f.envName.value = env.name;
     f.envGroup.value = env.group;
     f.carryOverspending.checked = !!env.carryOverspending;
+    f.envHidden.checked = !!env.hidden;
     const others = budget.envelopes.filter((e) => e.id !== envId);
     const used = budget.transactions.some((t) => t.envelopeId === envId)
       || (budget.recurring || []).some((r) => r.envelopeId === envId);
@@ -737,6 +828,7 @@
     try {
       B.updateEnvelope(budget, editingTarget, {
         name: f.envName.value, group: f.envGroup.value, carryOverspending: f.carryOverspending.checked,
+        hidden: f.envHidden.checked,
       });
       B.setTarget(budget, editingTarget, target);
     } catch (err) {

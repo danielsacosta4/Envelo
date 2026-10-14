@@ -32,6 +32,7 @@
   function ensureAccounts(b) {
     if (!Array.isArray(b.accounts)) b.accounts = [];
     if (!Array.isArray(b.recurring)) b.recurring = [];
+    if (!Array.isArray(b.hiddenGroups)) b.hiddenGroups = [];
     if (b.transactions.some((t) => !t.accountId)) {
       const main = b.accounts[0] || addAccount(b, { name: 'Main account' });
       for (const t of b.transactions) if (!t.accountId) t.accountId = main.id;
@@ -157,7 +158,7 @@
     deleteEnvelope(b, id, null);
   }
 
-  function updateEnvelope(b, id, { name, group, carryOverspending }) {
+  function updateEnvelope(b, id, { name, group, carryOverspending, hidden }) {
     const env = b.envelopes.find((e) => e.id === id);
     if (!env) throw new Error('Unknown envelope.');
     const clean = String(name || '').trim();
@@ -165,6 +166,7 @@
     env.name = clean;
     env.group = String(group || '').trim() || 'General';
     if (carryOverspending !== undefined) env.carryOverspending = !!carryOverspending;
+    if (hidden !== undefined) env.hidden = !!hidden;
   }
 
   // Delete an envelope. Its transactions and recurring rules move to `moveToId`.
@@ -556,6 +558,7 @@
       id: env.id,
       name: env.name,
       group: env.group,
+      hidden: isHidden(b, env),
       target,
       carryover,
       assigned,
@@ -569,6 +572,18 @@
       due: need ? need.due || null : null,
       progress,
     };
+  }
+
+  // Hidden envelopes (or envelopes in a hidden group) stay in every total but
+  // are tucked away on screen and left out of "Fund all targets".
+  function isHidden(b, env) {
+    return !!env.hidden || (b.hiddenGroups || []).includes(env.group);
+  }
+
+  function setGroupHidden(b, group, hidden) {
+    const list = new Set(b.hiddenGroups || []);
+    if (hidden) list.add(group); else list.delete(group);
+    b.hiddenGroups = [...list];
   }
 
   // Older data stored a plain goal balance on the envelope.
@@ -586,7 +601,7 @@
     for (const env of b.envelopes) {
       if (left <= 0) break;
       const st = envelopeStatus(b, env.id, month);
-      if (!st.underfunded) continue;
+      if (!st.underfunded || st.hidden) continue;
       const give = Math.min(st.needed, left);
       setAssigned(b, month, env.id, st.assigned + give);
       left -= give;
@@ -605,7 +620,7 @@
     return {
       month,
       readyToAssign: readyToAssign(b, month),
-      underfunded: [...groups.values()].flat().reduce((sum, e) => sum + (e.needed || 0), 0),
+      underfunded: [...groups.values()].flat().reduce((sum, e) => sum + (e.hidden ? 0 : e.needed || 0), 0),
       groups: [...groups].map(([name, envelopes]) => ({ name, envelopes })),
     };
   }
@@ -649,6 +664,7 @@
       assignments: obj.assignments,
       accounts: Array.isArray(obj.accounts) ? obj.accounts : [],
       recurring: Array.isArray(obj.recurring) ? obj.recurring : [],
+      hiddenGroups: Array.isArray(obj.hiddenGroups) ? obj.hiddenGroups : [],
     });
   }
 
@@ -779,7 +795,7 @@
     setTarget, normalizeTarget, fundAllTargets, weekdaysInMonth,
     updateEnvelope, deleteEnvelope, updateTransaction, transactionKind,
     addAccount, updateAccount, deleteAccount, accountBalance, reconcileAccount, ensureAccounts,
-    isOnBudget, transferNeedsEnvelope, countsAsIncome,
+    isOnBudget, transferNeedsEnvelope, countsAsIncome, isHidden, setGroupHidden,
     addRecurring, removeRecurring, applyRecurring, nextRecurringDate, report,
     parseCsv, importTransactionsCsv,
   };
