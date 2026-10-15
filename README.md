@@ -2,9 +2,31 @@
 
 Envelope budgeting you can run on your own server, with an account per person.
 
-Every dollar gets a job: income lands in **Ready to assign**, you move it into
+Every euro gets a job: income lands in **Ready to assign**, you move it into
 envelopes (Rent, Groceries, Emergency fund…), and spending draws each envelope
 down. Unspent money rolls over automatically.
+
+![The budget screen: October's envelopes grouped into colour bands, with Ready to Assign in the corner](docs/screenshots/budget.png)
+
+## Screenshots
+
+The screenshots use a made-up household budget.
+
+| | |
+|---|---|
+| ![Adding a transaction from the side drawer](docs/screenshots/transaction.png) | ![The budget in dark mode](docs/screenshots/budget-dark.png) |
+| **Add a transaction** from anywhere. The payee remembers its envelope. | **Dark mode** follows your system, or pick it in Settings. |
+| ![Reports: income and spending, spending by group, net worth](docs/screenshots/reports.png) | ![Monthly recap with overspending and where the money went](docs/screenshots/recap.png) |
+| **Reports** for income, spending, net worth and top envelopes. | **Monthly recap**: what you kept, what was overspent and where it went. |
+| ![Goals with milestones and a forecast](docs/screenshots/goals.png) | ![A tracked mortgage with an extra-payment what-if](docs/screenshots/loans.png) |
+| **Goals** across accounts or envelopes, with milestones and a forecast. | **Loans**: what you owe, the payoff date and what paying extra saves. |
+
+<p align="center">
+  <img src="docs/screenshots/phone-budget.png" alt="The budget on a phone" width="270">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/phone-transaction-dark.png" alt="Adding a transaction on a phone in dark mode" width="270">
+</p>
+<p align="center"><em>On your phone, where it installs as an app.</em></p>
 
 ## What's different from YNAB
 
