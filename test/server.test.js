@@ -363,6 +363,24 @@ test('sharing envelopes: members see only those, and can add spending when allow
     assert.equal(ob.body.revision, 2);
     assert.ok(ob.body.budget.transactions.some((t) => t.payee === 'Market' && t.amount === -1500));
 
+    // Members can add money to a shared envelope, into one of the owner's accounts.
+    const add = { date: '2026-10-06', amount: 5000, envelopeId: 'e1', accountId: 'a1' };
+    assert.equal((await member('POST', `/api/shared/${id}/money`, { ...add, envelopeId: 'e2' })).status, 400);
+    assert.equal((await member('POST', `/api/shared/${id}/money`, { ...add, amount: -5 })).status, 400);
+    assert.equal((await stranger('POST', `/api/shared/${id}/money`, add)).status, 404);
+    const gave = await member('POST', `/api/shared/${id}/money`, add);
+    assert.equal(gave.status, 201);
+    const gift = gave.body.budget.transactions.find((t) => t.amount === 5000);
+    assert.equal(gift.payee, 'From member@example.com');
+    assert.equal(gift.contribution, true);
+    const after = await owner('GET', '/api/budget');
+    const B = require('../src/budget.js');
+    const ob2 = B.fromJSON(after.body.budget);
+    // Groceries: 40000 assigned - 2000 - 1500 spent + 5000 added = 41500; Ready to Assign unchanged.
+    assert.equal(B.envelopeStatus(ob2, 'e1', '2026-10').available, 41500);
+    assert.equal(B.readyToAssign(ob2, '2026-10'), 300000 - 50000);
+    assert.equal((await member('DELETE', `/api/shared/${id}/transactions/${gift.id}`)).status, 200);
+
     // Members can delete only what they added.
     assert.equal((await member('DELETE', `/api/shared/${id}/transactions/t2`)).status, 403);
     assert.equal((await member('DELETE', `/api/shared/${id}/transactions/${mine.id}`)).status, 200);

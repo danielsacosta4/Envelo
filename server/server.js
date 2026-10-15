@@ -165,7 +165,7 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
         envelopes: budget.envelopes.filter((e) => ids.has(e.id)).map((e) => ({ ...e, hidden: false })),
         transactions: budget.transactions.filter((t) => ids.has(t.envelopeId)).map((t) => ({
           id: t.id, date: t.date, payee: t.payee, note: t.note, amount: t.amount,
-          envelopeId: t.envelopeId, accountId: t.accountId, createdBy: t.createdBy || sh.owner,
+          envelopeId: t.envelopeId, accountId: t.accountId, createdBy: t.createdBy || sh.owner, contribution: !!t.contribution,
         })),
         assignments,
         accounts: budget.accounts.filter((a) => !a.offBudget).map((a) => ({ id: a.id, name: a.name, offBudget: false })),
@@ -695,6 +695,37 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
       persist();
       notify(sh.member, 'shared', { shareId: sh.id, removed: true });
       return sendJson(res, 200, { ok: true });
+    }
+
+    // Adding money to a shared envelope: the member put money into one of the
+    // owner's accounts for that envelope (say, a transfer to the joint
+    // account). It raises the envelope and the account, not Ready to Assign.
+    const moneyMatch = pathname.match(/^\/api\/shared\/([\w-]+)\/money$/);
+    if (moneyMatch && req.method === 'POST') {
+      const user = requireUser(req);
+      const sh = shareById(moneyMatch[1]);
+      if (!sh || sh.member !== user.email) throw new HttpError(404, 'Not found.');
+      if (sh.role !== 'edit') throw new HttpError(403, 'You can only view these envelopes.');
+      const { budget } = ownerBudget(sh.owner);
+      const body = await readJson(req);
+      const amount = Number(body?.amount);
+      if (!Number.isInteger(amount) || amount <= 0) throw new HttpError(400, 'Enter an amount to add.');
+      if (!sh.envelopeIds.includes(body?.envelopeId) || !budget.envelopes.some((e) => e.id === body.envelopeId)) throw new HttpError(400, 'Pick one of the shared envelopes.');
+      if (!budget.accounts.some((a) => a.id === body?.accountId && !a.offBudget)) throw new HttpError(400, 'Pick the account the money went into.');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(body?.date || ''))) throw new HttpError(400, 'Date must be YYYY-MM-DD.');
+      budget.transactions.push({
+        id: crypto.randomUUID(),
+        date: body.date,
+        payee: String(body.payee || `From ${user.email}`).slice(0, 80),
+        note: String(body.note || '').slice(0, 140),
+        amount,
+        envelopeId: body.envelopeId,
+        accountId: body.accountId,
+        createdBy: user.email,
+        contribution: true,
+      });
+      saveOwnerBudget(sh.owner, budget, req.headers['x-client-id']);
+      return sendJson(res, 201, sharedView(sh));
     }
 
     const sharedMatch = pathname.match(/^\/api\/shared\/([\w-]+)(\/transactions(?:\/([\w:-]+))?)?$/);

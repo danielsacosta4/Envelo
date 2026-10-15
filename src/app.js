@@ -1675,7 +1675,7 @@
     $('#tx-delete').hidden = true;
     $('#tx-error').hidden = true;
     syncKind();
-    if (!$('#tx-dialog').open) $('#tx-dialog').showModal();
+    if (!$('#tx-dialog').open) { $('#tx-dialog').showModal(); Sounds.play('whoosh'); }
     setTimeout(() => f.amount.focus(), 30);
   }
 
@@ -2115,7 +2115,7 @@
     $('#share-list').innerHTML = shares.outgoing.map((sh) => {
       const envs = sh.envelopeIds.map((id) => names[id]).filter(Boolean);
       return `<li>
-        <div class="tx-meta">${sh.role === 'edit' ? 'Can add spending' : 'Can see'} · ${envs.length} envelope${envs.length === 1 ? '' : 's'}</div>
+        <div class="tx-meta">${sh.role === 'edit' ? 'Can add spending and money' : 'Can see'} · ${envs.length} envelope${envs.length === 1 ? '' : 's'}</div>
         <div><button type="button" class="env-link" data-action="edit-share" data-id="${sh.id}">${esc(sh.member)}</button></div>
         <div class="tx-meta share-envs">${esc(envs.join(', '))}</div>
       </li>`;
@@ -2184,52 +2184,71 @@
     const me = account ? account.email : '';
     $('#shared-list').innerHTML = shares.incoming.map((sh) => {
       const data = sharedData[sh.id];
-      if (!data) return `<section class="panel"><p class="empty">Could not load what ${esc(sh.owner)} shared.</p></section>`;
+      if (!data) return `<section class="card"><p class="empty">Could not load what ${esc(sh.owner)} shared.</p></section>`;
       const b = data.budget;
       const view = B.monthView(b, month);
       const fmt = (c) => B.formatMoney(c, b.currency);
       const rows = view.groups.flatMap((g) => g.envelopes.map((e) => `<tr>
         <td class="env-cell"><div class="env-name">${esc(e.name)}</div><div class="goal">${esc(g.name)}</div></td>
         <td class="num" data-label="Assigned">${esc(fmt(e.assigned))}</td>
-        <td class="num" data-label="Spent">${esc(fmt(e.activity))}</td>
+        <td class="num" data-label="In / out">${esc(fmt(e.activity))}</td>
         <td class="num" data-label="Available"><span class="chip ${e.available < 0 ? "neg" : e.available === 0 ? "zero" : "ok"}">${esc(fmt(e.available))}</span></td>
       </tr>`)).join('');
       const txs = b.transactions.filter((t) => t.date.slice(0, 7) === month).sort((x, y) => (x.date < y.date ? 1 : -1));
       const envName = Object.fromEntries(b.envelopes.map((e) => [e.id, e.name]));
       const canEdit = sh.role === 'edit';
-      return `<section class="panel shared-card" data-share="${sh.id}">
-        <div class="panel-head">
+      return `<section class="card shared-card" data-share="${sh.id}">
+        <div class="card-head">
           <h2>From ${esc(sh.owner)}</h2>
-          <span class="hint">${canEdit ? 'You can add spending' : 'You can see these envelopes'}</span>
+          <span class="hint">${canEdit ? 'You can add spending and money' : 'You can see these envelopes'}</span>
         </div>
         <div class="table-wrap"><table class="shared-table">
-          <thead><tr><th>Envelope</th><th class="num">Assigned</th><th class="num">Spent</th><th class="num">Available</th></tr></thead>
+          <thead><tr><th>Envelope</th><th class="num">Assigned</th><th class="num">In / out</th><th class="num">Available</th></tr></thead>
           <tbody>${rows || '<tr><td colspan="4" class="empty">Nothing shared right now.</td></tr>'}</tbody>
         </table></div>
         ${canEdit && b.envelopes.length ? `<form class="shared-form" data-share="${sh.id}" autocomplete="off">
-          <h3 class="sub-h">Add spending</h3>
+          <div class="segmented two" role="radiogroup" aria-label="What to add">
+            <label><input type="radio" name="mode" value="spend" checked><span>Add spending</span></label>
+            <label><input type="radio" name="mode" value="money"><span>Add money</span></label>
+          </div>
+          <p class="hint mode-hint">Spending you paid from ${esc(sh.owner)}'s account.</p>
           <div class="shared-grid">
-            <label>Date <input type="date" name="date" required value="${todayISO()}"></label>
-            <label>Payee <input type="text" name="payee" maxlength="80" placeholder="Where it went"></label>
             <label>Amount <input type="text" name="amount" inputmode="decimal" required placeholder="0.00"></label>
             <label>Envelope <select name="envelopeId">${b.envelopes.map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select></label>
-            <label>Paid from <select name="accountId">${b.accounts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>
+            <label><span class="acct-label">Paid from</span> <select name="accountId">${b.accounts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>
+            <label>Date <input type="date" name="date" required value="${todayISO()}"></label>
+            <label class="payee-field">Payee <input type="text" name="payee" maxlength="80" placeholder="Where it went"></label>
             <label>Note <input type="text" name="note" maxlength="140" placeholder="Optional"></label>
           </div>
-          <button type="submit" class="primary">Add spending</button>
+          <button type="submit" class="btn primary">Add spending</button>
           <p class="auth-message" hidden></p>
         </form>` : ''}
         <h3 class="sub-h">This month</h3>
         <ul class="tx-list">${txs.length ? txs.map((t) => `<li>
           <div class="tx-meta">${esc(t.date)} · ${esc(envName[t.envelopeId] || '')}${t.createdBy && t.createdBy !== me ? ` · by ${esc(t.createdBy)}` : ' · by you'}${t.note ? ` · ${esc(t.note)}` : ''}</div>
-          <div><strong>${esc(t.payee || 'Spending')}</strong></div>
-          <div class="tx-amt ${t.amount > 0 ? 'in' : ''}">${esc(fmt(t.amount))}</div>
+          <div><strong>${esc(t.payee || (t.amount > 0 ? 'Money added' : 'Spending'))}</strong></div>
+          <div class="tx-amt ${t.amount > 0 ? 'in' : ''}">${t.amount > 0 ? '+' : ''}${esc(fmt(t.amount))}</div>
           ${canEdit && t.createdBy === me ? `<button type="button" class="icon tx-del" data-action="delete-shared-tx" data-share="${sh.id}" data-id="${t.id}" aria-label="Delete">&times;</button>` : ''}
-        </li>`).join('') : '<li class="tx-meta">Nothing spent this month.</li>'}</ul>
+        </li>`).join('') : '<li class="tx-meta">Nothing added or spent this month.</li>'}</ul>
         <button type="button" class="icon-text" data-action="leave-share" data-id="${sh.id}">Leave this share</button>
       </section>`;
-    }).join('') || '<section class="panel"><p class="empty">Nobody has shared envelopes with you.</p></section>';
+    }).join('') || '<section class="card"><p class="empty">Nobody has shared envelopes with you.</p></section>';
   }
+
+  // Switching a shared form between adding spending and adding money.
+  document.addEventListener('change', (ev) => {
+    const t = ev.target;
+    if (!t.matches('.shared-form input[name=mode]')) return;
+    const f = t.closest('form');
+    const adding = f.mode.value === 'money';
+    const sh = shares.incoming.find((x) => x.id === f.dataset.share);
+    f.querySelector('.acct-label').textContent = adding ? 'Put into' : 'Paid from';
+    f.querySelector('.payee-field').hidden = adding;
+    f.querySelector('button[type=submit]').textContent = adding ? 'Add money' : 'Add spending';
+    f.querySelector('.mode-hint').textContent = adding
+      ? `Money you put into ${sh ? sh.owner : 'their'}'s account for this envelope, like a transfer to a joint account. It goes straight into the envelope.`
+      : `Spending you paid from ${sh ? sh.owner : 'their'}'s account.`;
+  });
 
   document.addEventListener('submit', async (ev) => {
     const f = ev.target;
@@ -2242,14 +2261,17 @@
       err.hidden = false;
       return;
     }
+    const adding = f.mode.value === 'money';
     try {
-      const res = await api('POST', `/api/shared/${f.dataset.share}/transactions`, {
-        date: f.date.value, payee: f.payee.value, amount: cents, envelopeId: f.envelopeId.value,
+      const res = await api('POST', `/api/shared/${f.dataset.share}/${adding ? 'money' : 'transactions'}`, {
+        date: f.date.value, payee: adding ? undefined : f.payee.value, amount: cents, envelopeId: f.envelopeId.value,
         accountId: f.accountId.value, note: f.note.value,
       });
       sharedData[f.dataset.share] = { ...res, budget: B.fromJSON(res.budget) };
       render();
-      toast(`Added ${B.formatMoney(cents, res.budget.currency)}`);
+      const env = res.budget.envelopes.find((e) => e.id === f.envelopeId.value);
+      toast(adding ? `Added ${B.formatMoney(cents, res.budget.currency)} to ${env ? env.name : 'the envelope'}` : `Added spending of ${B.formatMoney(cents, res.budget.currency)}`);
+      Sounds.play(adding ? 'coin' : 'tick');
     } catch (e) {
       err.textContent = e.message;
       err.hidden = false;
@@ -2583,7 +2605,7 @@
       const ticks = [25, 50, 75].map((m) => `<span class="tick ${pct >= m ? 'hit' : ''}" style="left:${m}%"></span>`).join('');
       const stones = st.milestones.map((m) => `<li class="${m.month ? 'hit' : ''}"><b>${m.percent}%</b>
         <span>${m.month ? esc(fmtMonth(m.month)) : esc(money(Math.round((g.amount * m.percent) / 100)))}</span></li>`).join('');
-      return `<article class="panel goal-card ${done ? 'done' : ''}">
+      return `<article class="card goal-card ${done ? 'done' : ''}">
         <header class="loan-head">
           <h3>${esc(g.name)}</h3>
           <button type="button" class="icon-text" data-action="edit-goal" data-id="${g.id}">Edit</button>
@@ -2600,7 +2622,7 @@
         <div class="goal-forecast">${forecast}</div>
         <div class="chart goal-chart" id="goal-chart-${g.id}"></div>
       </article>`;
-    }).join('') : `<section class="panel"><p class="empty">No goals yet. Use "New goal" to set one, such as an emergency fund
+    }).join('') : `<section class="card"><p class="empty">No goals yet. Use "New goal" to set one, such as an emergency fund
       across your savings accounts or a net worth you want to reach.</p></section>`;
 
     for (const [g, st] of statuses) {
@@ -2773,7 +2795,7 @@
       const payoff = st.paidOff ? 'Paid off'
         : st.plan.neverPaysOff ? 'Never at this payment: it does not cover the interest'
         : `${fmtMonth(st.plan.payoffMonth)} · in ${duration(st.plan.months)}`;
-      return `<article class="panel loan-card">
+      return `<article class="card loan-card">
         <header class="loan-head">
           <h3>${esc(a.name)}</h3>
           <span class="hint">${esc(String(a.loan.rate).replace('.', ','))}% a year · ${esc(money(a.loan.payment))} a month</span>
@@ -2796,13 +2818,13 @@
         </div>
         <div class="chart loan-chart" id="loan-chart-${a.id}"></div>`}
         <div class="row">
-          ${st.paidOff ? '' : `<button type="button" data-action="loan-interest" data-id="${a.id}" data-amount="${st.monthlyInterest}"
+          ${st.paidOff ? '' : `<button type="button" class="btn sm" data-action="loan-interest" data-id="${a.id}" data-amount="${st.monthlyInterest}"
             title="Adds the interest to the amount owed">${interestThisMonth ? '✓ Interest recorded this month' : `Record interest (${esc(money(st.monthlyInterest))})`}</button>`}
-          <button type="button" data-action="edit-loan" data-id="${a.id}">Edit details</button>
-          <button type="button" data-action="open-account" data-id="${a.id}">Open account</button>
+          <button type="button" class="btn sm" data-action="edit-loan" data-id="${a.id}">Edit details</button>
+          <button type="button" class="btn sm" data-action="open-account" data-id="${a.id}">Open account</button>
         </div>
       </article>`;
-    }).join('') : `<section class="panel"><p class="empty">No loans tracked yet. Use "Track a loan" to add a mortgage, car loan or personal loan,
+    }).join('') : `<section class="card"><p class="empty">No loans tracked yet. Use "Track a loan" to add a mortgage, car loan or personal loan,
       or try the calculator below and track the result.</p></section>`;
 
     for (const a of loans) drawLoanChart(a, L.loanStatus(a.loan, loanTransactions(a.id), { today, extra: loanExtra[a.id] || 0 }));

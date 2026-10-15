@@ -599,6 +599,8 @@ table.register td.neg { color: var(--bad); }
 .shared-table td { padding: 10px 8px; border-bottom: 2px dashed var(--rule); }
 .shared-form { border: 3px solid var(--edge); background: var(--mint); padding: 12px 14px; margin-bottom: 14px; }
 .shared-form .sub-h { margin-top: 0; }
+.segmented.two { grid-template-columns: 1fr 1fr; margin-bottom: 8px; background: var(--card); }
+.shared-form .mode-hint { margin: 0 0 10px; }
 .shared-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 14px; margin-bottom: 12px; }
 
 /* Bank file import */
