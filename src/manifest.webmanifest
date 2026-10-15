@@ -1,0 +1,19 @@
+{
+  "name": "Envelo",
+  "short_name": "Envelo",
+  "description": "Envelope budgeting on your own server",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4efe4",
+  "theme_color": "#ff5a3c",
+  "icons": [
+    { "src": "/src/brand/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/src/brand/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/src/brand/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "Add a transaction", "url": "/?add=1", "icons": [{ "src": "/src/brand/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

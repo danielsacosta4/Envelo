@@ -512,3 +512,79 @@ test('goals are validated and survive a reload', () => {
   assert.equal(copy.goals.length, 1);
   assert.equal(copy.goals[0].by, '2030-01');
 });
+
+test('groups get distinct colours, neighbours never match, and choices are kept', () => {
+  const b = B.create();
+  for (let i = 0; i < 20; i++) B.addEnvelope(b, { name: `E${i}`, group: `G${i}` });
+  assert.equal(B.ensureGroupColors(b), true);
+  const names = B.groupNames(b);
+  const colors = names.map((n) => b.groupColors[n]);
+  assert.equal(new Set(colors.slice(0, 16)).size, 16);
+  for (let i = 1; i < colors.length; i++) assert.notEqual(colors[i], colors[i - 1]);
+  B.setGroupColor(b, 'G3', 7);
+  assert.equal(B.ensureGroupColors(b), false);
+  assert.equal(b.groupColors.G3, 7);
+  assert.throws(() => B.setGroupColor(b, 'G3', 16), /colour/);
+  const copy = B.fromJSON(JSON.parse(JSON.stringify(b)));
+  assert.equal(copy.groupColors.G3, 7);
+});
+
+test('split transactions spread one purchase over envelopes and delete together', () => {
+  const { b, rent, food } = sample();
+  B.addTransaction(b, { kind: 'income', date: '2026-10-01', amount: 100000 });
+  const first = B.addSplit(b, { date: '2026-10-05', payee: 'Hipermercado', lines: [{ envelopeId: food.id, amount: 3000 }, { envelopeId: rent.id, amount: 1500 }] });
+  assert.equal(B.envelopeStatus(b, food.id, '2026-10').activity, -3000);
+  assert.equal(B.envelopeStatus(b, rent.id, '2026-10').activity, -1500);
+  assert.equal(B.splitLegs(b, first.id).length, 2);
+  assert.throws(() => B.addSplit(b, { date: '2026-10-05', lines: [{ envelopeId: food.id, amount: 100 }] }), /two lines/);
+  B.removeTransaction(b, first.id);
+  assert.equal(b.transactions.length, 1);
+});
+
+test('moving money between envelopes and to Ready to Assign', () => {
+  const { b, rent, food } = sample();
+  B.addTransaction(b, { kind: 'income', date: '2026-10-01', amount: 100000 });
+  B.setAssigned(b, '2026-10', rent.id, 50000);
+  B.moveMoney(b, '2026-10', rent.id, food.id, 20000);
+  assert.equal(B.assignedIn(b, '2026-10', rent.id), 30000);
+  assert.equal(B.assignedIn(b, '2026-10', food.id), 20000);
+  B.moveMoney(b, '2026-10', null, food.id, 10000);
+  assert.equal(B.readyToAssign(b, '2026-10'), 40000);
+  B.moveMoney(b, '2026-10', food.id, null, 30000);
+  assert.equal(B.assignedIn(b, '2026-10', food.id), 0);
+  assert.throws(() => B.moveMoney(b, '2026-10', food.id, food.id, 1), /different/);
+});
+
+test('payee memory suggests the last envelope and search finds transactions', () => {
+  const { b, food, rent } = sample();
+  B.addTransaction(b, { kind: 'spend', date: '2026-09-01', amount: 1000, payee: 'Lidl', envelopeId: rent.id });
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-01', amount: 2340, payee: 'Lidl', envelopeId: food.id, note: 'weekly shop' });
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-02', amount: 500, payee: 'Galp', envelopeId: rent.id });
+  assert.deepEqual(B.payees(b).slice(0, 2), ['Lidl', 'Galp']);
+  assert.equal(B.payeeMemory(b, ' lidl ').envelopeId, food.id);
+  assert.equal(B.payeeMemory(b, 'nobody'), null);
+  assert.equal(B.searchTransactions(b, { q: 'weekly' }).length, 1);
+  assert.equal(B.searchTransactions(b, { q: '23,4' }).length, 1);
+  assert.equal(B.searchTransactions(b, { envelopeId: rent.id }).length, 2);
+  assert.equal(B.searchTransactions(b, { from: '2026-10-01' }).length, 2);
+});
+
+test('recap and streaks describe a month, including overspending', () => {
+  const { b, food, rent } = sample();
+  for (const m of ['07', '08', '09', '10']) {
+    B.addTransaction(b, { kind: 'income', date: `2026-${m}-01`, amount: 100000 });
+    B.setAssigned(b, `2026-${m}`, food.id, 20000);
+    B.setAssigned(b, `2026-${m}`, rent.id, 80000);
+    B.addTransaction(b, { kind: 'spend', date: `2026-${m}-10`, amount: 26000, envelopeId: food.id, payee: 'Shop' });
+  }
+  const r = B.recap(b, '2026-10');
+  assert.equal(r.income, 100000);
+  assert.equal(r.spending, 26000);
+  assert.equal(r.overspent[0].name, 'Groceries');
+  assert.equal(r.overspent[0].amount, 6000);
+  assert.equal(r.hints[0].name, 'Groceries');
+  assert.equal(r.hints[0].suggest, 26000);
+  const s = B.streaks(b, '2026-10');
+  assert.equal(s.noOverspending, 0);
+  assert.equal(s.saving, 4);
+});

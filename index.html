@@ -2,189 +2,118 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Envelo</title>
+  <meta name="theme-color" content="#ff5a3c">
+  <link rel="icon" href="src/brand/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="src/brand/apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="src/styles.css">
 </head>
 <body>
   <section id="auth" class="auth" hidden>
     <form id="auth-form" class="auth-card" autocomplete="on">
-      <div class="brand auth-brand">Envelo</div>
+      <div class="auth-brand"><img src="src/brand/logo.svg" alt="" width="54" height="54"><span>Envelo</span></div>
       <div class="auth-tabs" role="tablist">
         <button type="button" class="active" data-auth-mode="login" role="tab">Sign in</button>
         <button type="button" data-auth-mode="register" role="tab">Create account</button>
       </div>
       <p id="auth-message" class="auth-message" hidden></p>
-      <label>Email <input type="email" name="email" required autocomplete="email"></label>
-      <label>Password <input type="password" id="auth-password" name="password" required minlength="8" autocomplete="current-password"></label>
+      <div id="auth-fields" class="stack">
+        <label>Email <input type="email" name="email" required autocomplete="email"></label>
+        <label>Password <input type="password" id="auth-password" name="password" required minlength="8" autocomplete="current-password"></label>
+      </div>
+      <div id="auth-code-field" class="stack" hidden>
+        <p class="hint">Enter the 6-digit code from your authenticator app, or one of your recovery codes.</p>
+        <label>Code <input type="text" name="code" id="auth-code" inputmode="numeric" autocomplete="one-time-code" maxlength="20"></label>
+      </div>
+      <div id="auth-newpass-field" class="stack" hidden>
+        <p class="hint">Your password was reset. Choose a new one to continue.</p>
+        <label>New password <input type="password" name="newPassword" id="auth-newpass" minlength="8" autocomplete="new-password"></label>
+      </div>
       <p id="auth-hint" class="hint"></p>
-      <button type="submit" id="auth-submit" class="primary">Sign in</button>
+      <button type="submit" id="auth-submit" class="btn primary big">Sign in</button>
     </form>
   </section>
 
   <div id="app" hidden>
   <header class="topbar">
-    <div class="brand">Envelo</div>
-    <nav class="views" aria-label="Sections">
-      <button type="button" class="active" data-view="budget">Budget</button>
-      <button type="button" data-view="accounts">Accounts</button>
-      <button type="button" data-view="reports">Reports</button>
-      <button type="button" data-view="goals">Goals</button>
-      <button type="button" data-view="loans">Loans</button>
-      <button type="button" data-view="shared" id="nav-shared" hidden>Shared</button>
-    </nav>
-    <nav class="month-nav" aria-label="Month">
-      <button type="button" data-action="prev-month" aria-label="Previous month">&lsaquo;</button>
-      <span id="month-label"></span>
-      <button type="button" data-action="next-month" aria-label="Next month">&rsaquo;</button>
-      <button type="button" class="ghost" data-action="this-month">Today</button>
-    </nav>
-    <div id="ready" class="ready"></div>
+    <div class="top-row">
+      <button type="button" class="brand" data-view="budget" aria-label="Envelo, go to the budget">
+        <img src="src/brand/logo.svg" alt="" width="40" height="40"><span>Envelo</span>
+      </button>
+      <nav class="views" aria-label="Sections">
+        <button type="button" class="active" data-view="budget">Budget</button>
+        <button type="button" data-view="accounts">Accounts</button>
+        <button type="button" data-view="reports">Reports</button>
+        <button type="button" data-view="goals">Goals</button>
+        <button type="button" data-view="loans">Loans</button>
+        <button type="button" data-view="shared" class="nav-shared" hidden>Shared</button>
+      </nav>
+      <div class="top-tools">
+        <button type="button" class="tool" data-view="search" title="Search transactions (/)" aria-label="Search transactions">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>
+        </button>
+        <button type="button" class="tool" data-view="settings" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2.3" fill="#fff"/><circle cx="15" cy="12" r="2.3" fill="#fff"/><circle cx="7" cy="18" r="2.3" fill="#fff"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="hero" id="hero">
+      <nav class="month-nav" aria-label="Month">
+        <button type="button" class="arr" data-action="prev-month" aria-label="Previous month">&lsaquo;</button>
+        <h1 id="month-label"></h1>
+        <button type="button" class="arr" data-action="next-month" aria-label="Next month">&rsaquo;</button>
+        <button type="button" class="today" data-action="this-month">Today</button>
+      </nav>
+      <div id="ready" class="ready" aria-live="polite"></div>
+    </div>
   </header>
+  <div id="stats" class="stats"></div>
 
   <div id="error" class="error" hidden></div>
 
   <h1 class="print-title">Envelo · <span id="print-month"></span></h1>
+
   <main class="layout" id="view-budget">
-    <section class="panel envelopes">
-      <div class="panel-head">
-        <h2>Envelopes</h2>
-        <span class="hint">Assign money by typing into the Assigned column.</span>
+    <section class="budget-main">
+      <div id="recap-banner"></div>
+      <div class="toolbar">
+        <h2 class="page-h">Envelopes</h2>
+        <div class="row">
+          <button type="button" class="btn sm" data-action="move-money">Move money</button>
+          <button type="button" class="btn sm" data-action="new-envelope">+ Envelope</button>
+        </div>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Envelope</th>
-              <th class="num">Assigned</th>
-              <th class="num">Spent</th>
-              <th class="num">Available</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="envelope-rows"></tbody>
-        </table>
+      <div id="envelope-rows" class="groups"></div>
+      <div id="empty" class="empty-card" hidden>
+        <p>No envelopes yet.</p>
+        <button type="button" class="btn primary" data-action="new-envelope">Add your first envelope</button>
       </div>
-      <p id="empty" class="empty" hidden>No envelopes yet. Add one on the right to get started.</p>
     </section>
 
     <aside class="side" id="budget-side">
-      <section class="panel" id="tx-panel">
-        <h2 id="tx-heading">Add transaction</h2>
-        <form id="tx-form" class="stack" autocomplete="off">
-          <div class="segmented" role="radiogroup" aria-label="Type">
-            <label><input type="radio" name="kind" value="spend" checked><span>Spending</span></label>
-            <label><input type="radio" name="kind" value="income"><span>Income</span></label>
-            <label><input type="radio" name="kind" value="transfer"><span>Transfer</span></label>
-          </div>
-          <label>Date <input type="date" name="date" required></label>
-          <label>Payee <input type="text" name="payee" maxlength="80" placeholder="Where it went or came from"></label>
-          <label>Amount <input type="text" name="amount" inputmode="decimal" required placeholder="0.00"></label>
-          <label id="tx-envelope-field">Envelope
-            <select name="envelopeId" id="tx-envelope"></select>
-          </label>
-          <label><span id="tx-account-label">Account</span> <select name="accountId" id="tx-account"></select></label>
-          <label id="tx-to-field" hidden>To account <select name="toAccountId" id="tx-to"></select></label>
-          <label>Note <input type="text" name="note" maxlength="140" placeholder="Optional"></label>
-          <label id="tx-repeat-field">Repeat
-            <select name="repeat">
-              <option value="">Does not repeat</option>
-              <option value="weekly">Every week</option>
-              <option value="biweekly">Every 2 weeks</option>
-              <option value="monthly">Every month</option>
-              <option value="yearly">Every year</option>
-            </select>
-          </label>
-          <div class="row">
-            <button type="submit" class="primary grow" id="tx-submit">Save transaction</button>
-            <button type="button" id="tx-cancel" data-action="cancel-edit" hidden>Cancel</button>
-          </div>
-        </form>
-      </section>
-
-      <section class="panel">
-        <h2>New envelope</h2>
-        <form id="env-form" class="stack" autocomplete="off">
-          <label>Name <input type="text" name="name" maxlength="60" required placeholder="Groceries"></label>
-          <label>Group <input type="text" name="group" maxlength="40" list="group-list" placeholder="Daily"></label>
-          <datalist id="group-list"></datalist>
-          <label>Target balance <span class="optional">(optional)</span>
-            <input type="text" name="goal" inputmode="decimal" placeholder="e.g. 500.00">
-          </label>
-          <button type="submit" class="primary">Add envelope</button>
-        </form>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head">
-          <h2>Transactions</h2>
-          <span class="hint" id="tx-count"></span>
-        </div>
+      <section class="card">
+        <div class="card-head"><h2>Latest</h2><span class="hint" id="tx-count"></span></div>
         <ul id="tx-list" class="tx-list"></ul>
+        <button type="button" class="link" data-view="search">All transactions →</button>
       </section>
-
-      <section class="panel footer-actions">
-        <label>Theme
-          <select id="theme">
-            <option value="auto">Match device</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-        </label>
-        <label>Row size
-          <select id="density">
-            <option value="compact">Compact</option>
-            <option value="normal">Normal</option>
-            <option value="large">Large</option>
-          </select>
-        </label>
-        <label>Currency
-          <select id="currency">
-            <option>USD</option><option>EUR</option><option>GBP</option><option>BRL</option>
-            <option>CAD</option><option>AUD</option><option>JPY</option><option>MXN</option>
-          </select>
-        </label>
-        <div class="row">
-          <button type="button" data-action="export">Export backup</button>
-          <button type="button" data-action="import">Import backup</button>
-          <input type="file" id="import-file" accept="application/json,.json" hidden>
-        </div>
-        <button type="button" data-action="import-actual">Import from Actual Budget</button>
-        <input type="file" id="import-actual-file" accept=".zip,application/zip,.csv,text/csv" hidden>
-        <p class="hint import-hint">Use Actual's <strong>Settings → Export data</strong> (.zip) to bring over everything, including budgeted amounts. A transactions .csv adds transactions to your current budget.</p>
-        <button type="button" data-action="print">Print this month's budget</button>
-        <button type="button" class="danger" data-action="reset">Erase all data</button>
-      </section>
-
-      <section class="panel sharing">
-        <h2>Sharing</h2>
-        <ul id="share-list" class="tx-list"></ul>
-        <button type="button" data-action="new-share">Share envelopes with someone</button>
-        <p class="hint">They sign in with their own account and see only the envelopes you pick. You decide whether they can add spending. Only you assign money.</p>
-      </section>
-
-      <section class="panel account">
-        <div class="account-line">
-          <span id="account" class="hint"></span>
-          <button type="button" data-action="logout">Sign out</button>
-        </div>
-        <p id="sync" class="hint sync" aria-live="polite"></p>
-        <p id="version" class="hint version"></p>
-      </section>
+      <div id="side-goal"></div>
+      <div id="side-loan"></div>
+      <div id="side-streak"></div>
     </aside>
   </main>
 
   <section id="view-accounts" class="layout" hidden>
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Accounts</h2>
-        <span class="hint" id="accounts-total"></span>
-      </div>
+    <section class="card">
+      <div class="card-head"><h2 class="page-h">Accounts</h2><span class="hint" id="accounts-total"></span></div>
       <div id="accounts-list" class="accounts-list"></div>
       <p class="hint accounts-help">Reconcile when you check your bank: enter what the bank shows and Envelo adds an adjustment for any difference.</p>
     </section>
     <aside class="side">
-      <section class="panel">
+      <section class="card">
         <h2>New account</h2>
         <form id="account-form" class="stack" autocomplete="off">
           <label>Name <input type="text" name="acctName" maxlength="60" required placeholder="Checking"></label>
@@ -192,28 +121,35 @@
           <label class="check"><input type="checkbox" name="offBudget">
             <span>Off budget <span class="optional">(mortgage, investments, pension: tracked, but not budgeted)</span></span>
           </label>
-          <button type="submit" class="primary">Add account</button>
+          <button type="submit" class="btn primary">Add account</button>
         </form>
       </section>
-      <section class="panel">
+      <section class="card">
+        <h2>Bank file</h2>
+        <p class="hint">Import a CSV export from your bank. Envelo learns each bank's layout the first time.</p>
+        <button type="button" class="btn" data-action="bank-import">Import bank file</button>
+      </section>
+      <section class="card">
         <h2>Recurring transactions</h2>
         <ul id="recurring-list" class="tx-list"></ul>
-        <p class="hint">Add one from the Budget page with the Repeat option.</p>
+        <p class="hint">Add one with the Repeat option when adding a transaction.</p>
       </section>
     </aside>
   </section>
 
-  <section id="view-account" class="layout" hidden>
-    <section class="panel account-page">
+  <section id="view-account" class="layout single" hidden>
+    <section class="card account-page">
       <div class="account-head">
-        <button type="button" class="icon-text" data-action="back-to-accounts">← All accounts</button>
+        <button type="button" class="link back" data-action="back-to-accounts">← All accounts</button>
         <h2 class="account-title" id="acct-title"></h2>
         <div class="account-summary">
           <div><div class="label">Balance</div><div class="acct-bal" id="acct-balance"></div></div>
           <div><div class="label">Reconciled</div><div class="hint" id="acct-reconciled"></div></div>
           <div class="row">
-            <button type="button" id="acct-reconcile" data-action="reconcile">Reconcile</button>
-            <button type="button" id="acct-loan" data-action="edit-loan" hidden>Loan details</button>
+            <button type="button" class="btn" id="acct-add" data-action="new-tx">+ Transaction</button>
+            <button type="button" class="btn" id="acct-reconcile" data-action="reconcile">Reconcile</button>
+            <button type="button" class="btn" id="acct-import" data-action="bank-import">Import bank file</button>
+            <button type="button" class="btn" id="acct-loan" data-action="edit-loan" hidden>Loan details</button>
           </div>
         </div>
       </div>
@@ -236,60 +172,91 @@
         </table>
       </div>
     </section>
-    <aside class="side" id="account-side"></aside>
   </section>
 
   <section id="view-reports" class="layout single" hidden>
-    <div class="report-toolbar">
-      <h2>Reports</h2>
-      <label class="inline-label">Last
-        <select id="report-months">
-          <option value="3">3 months</option>
-          <option value="6" selected>6 months</option>
-          <option value="12">12 months</option>
-        </select>
-      </label>
+    <div class="toolbar">
+      <h2 class="page-h">Reports</h2>
+      <div class="row">
+        <button type="button" class="btn sm" data-action="open-recap">Monthly recap</button>
+        <label class="inline-label">Last
+          <select id="report-months">
+            <option value="3">3 months</option>
+            <option value="6" selected>6 months</option>
+            <option value="12">12 months</option>
+          </select>
+        </label>
+      </div>
     </div>
     <div class="kpis" id="report-kpis"></div>
     <div class="report-grid">
-      <section class="panel"><h2>Income and spending</h2><div class="chart" id="chart-income"></div></section>
-      <section class="panel"><h2>Spending by group</h2><div class="chart" id="chart-groups"></div></section>
-      <section class="panel"><h2>Net worth</h2><div class="chart" id="chart-networth"></div></section>
-      <section class="panel"><h2>Top envelopes</h2><div class="chart" id="chart-top"></div></section>
+      <section class="card"><h2>Income and spending</h2><div class="chart" id="chart-income"></div></section>
+      <section class="card"><h2>Spending by group</h2><div class="chart" id="chart-groups"></div></section>
+      <section class="card"><h2>Net worth</h2><div class="chart" id="chart-networth"></div></section>
+      <section class="card"><h2>Top envelopes</h2><div class="chart" id="chart-top"></div></section>
     </div>
     <div class="report-grid">
-      <section class="panel"><h2>This month at the current pace</h2><div id="forecast"></div></section>
-      <section class="panel"><h2>When will targets be reached?</h2><div id="target-eta"></div></section>
+      <section class="card"><h2>This month at the current pace</h2><div id="forecast"></div></section>
+      <section class="card"><h2>When will targets be reached?</h2><div id="target-eta"></div></section>
     </div>
-    <section class="panel">
+    <section class="card">
       <h2>Spending by envelope</h2>
       <div class="table-wrap" id="report"></div>
     </section>
   </section>
 
+  <section id="view-recap" class="layout single" hidden>
+    <div class="toolbar">
+      <button type="button" class="link back" data-view="reports">← Reports</button>
+    </div>
+    <div id="recap"></div>
+  </section>
+
   <section id="view-goals" class="layout single" hidden>
-    <div class="report-toolbar">
-      <h2>Goals</h2>
-      <button type="button" class="primary" data-action="new-goal">New goal</button>
+    <div class="toolbar">
+      <h2 class="page-h">Goals</h2>
+      <button type="button" class="btn primary" data-action="new-goal">+ New goal</button>
     </div>
     <p class="hint goals-help">Goals add up money across accounts, envelopes or your whole net worth, like "€10,000 emergency fund in savings and Trading 212". Progress uses the month shown above.</p>
     <div id="goal-list" class="goal-list"></div>
   </section>
 
   <section id="view-shared" class="layout single" hidden>
-    <div class="report-toolbar"><h2>Shared with you</h2></div>
+    <div class="toolbar"><h2 class="page-h">Shared with you</h2></div>
     <div id="shared-list" class="shared-list"></div>
   </section>
 
+  <section id="view-search" class="layout single" hidden>
+    <div class="toolbar"><h2 class="page-h">Transactions</h2></div>
+    <section class="card search-card">
+      <div class="search-bar">
+        <input type="search" id="search-q" placeholder="Search payee, note, envelope or amount" aria-label="Search transactions">
+      </div>
+      <div class="search-filters">
+        <label class="inline-label">Account <select id="search-account"></select></label>
+        <label class="inline-label">Envelope <select id="search-envelope"></select></label>
+        <label class="inline-label">From <input type="date" id="search-from"></label>
+        <label class="inline-label">To <input type="date" id="search-to"></label>
+        <span class="hint" id="search-count"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="register search-results">
+          <thead><tr><th>Date</th><th>Payee</th><th>Envelope</th><th>Account</th><th class="num">Amount</th><th></th></tr></thead>
+          <tbody id="search-rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+
   <section id="view-loans" class="layout single" hidden>
-    <div class="report-toolbar">
-      <h2>Loans</h2>
-      <button type="button" data-action="new-loan">Track a loan</button>
+    <div class="toolbar">
+      <h2 class="page-h">Loans</h2>
+      <button type="button" class="btn primary" data-action="new-loan">+ Track a loan</button>
     </div>
     <div id="loan-list" class="loan-list"></div>
 
-    <section class="panel calc" id="calculator">
-      <div class="panel-head">
+    <section class="card calc" id="calculator">
+      <div class="card-head">
         <h2>Loan calculator</h2>
         <span class="hint">Try amounts, rates and extra payments. Nothing is saved until you choose to.</span>
       </div>
@@ -308,14 +275,14 @@
         <div class="rate-changes" id="rate-changes" hidden>
           <p class="hint">Rate changes. After each change the payment is recalculated over the time left, as banks do for variable loans.</p>
           <div id="rate-change-rows"></div>
-          <button type="button" data-action="add-rate-change">Add a rate change</button>
+          <button type="button" class="btn sm" data-action="add-rate-change">Add a rate change</button>
         </div>
       </form>
       <div class="kpis calc-kpis" id="calc-kpis"></div>
       <div class="chart" id="calc-chart"></div>
       <div class="calc-actions row">
-        <button type="button" data-action="calc-track" class="primary">Track this as a loan</button>
-        <button type="button" data-action="calc-envelope">Create an envelope for the payment</button>
+        <button type="button" data-action="calc-track" class="btn primary">Track this as a loan</button>
+        <button type="button" data-action="calc-envelope" class="btn">Create an envelope for the payment</button>
         <label class="inline-label">Table
           <select id="calc-table-mode">
             <option value="year">By year</option>
@@ -326,9 +293,219 @@
       <div class="table-wrap" id="calc-table"></div>
     </section>
   </section>
+
+  <section id="view-settings" class="layout settings" hidden>
+    <div class="settings-col">
+      <section class="card">
+        <h2>Look and feel</h2>
+        <div class="stack">
+          <label>Theme
+            <select id="theme">
+              <option value="auto">Match device</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+          <label>Font for numbers and titles
+            <select id="font">
+              <option value="poster">Poster</option>
+              <option value="classic">Classic</option>
+              <option value="modern">Modern</option>
+            </select>
+          </label>
+          <div class="font-preview" id="font-preview" aria-hidden="true">€1,234.56</div>
+          <label>Row size
+            <select id="density">
+              <option value="compact">Compact</option>
+              <option value="normal">Normal</option>
+              <option value="large">Large</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="sound-on"><span>Sounds <span class="optional">(coins, stamps and fanfares when things happen)</span></span></label>
+          <label id="volume-field">Volume <input type="range" id="sound-volume" min="0" max="100" value="60"></label>
+          <button type="button" class="btn sm" data-action="test-sound">Play a sound</button>
+          <p class="hint">These are saved on this device only.</p>
+        </div>
+      </section>
+      <section class="card">
+        <h2>Budget</h2>
+        <div class="stack">
+          <label>Currency
+            <select id="currency">
+              <option>EUR</option><option>USD</option><option>GBP</option><option>BRL</option><option>CHF</option>
+              <option>CAD</option><option>AUD</option><option>JPY</option><option>MXN</option><option>SEK</option>
+              <option>NOK</option><option>DKK</option><option>PLN</option><option>CZK</option>
+            </select>
+          </label>
+          <button type="button" class="btn" data-action="print">Print this month's budget</button>
+          <button type="button" class="btn" data-action="show-keys">Keyboard shortcuts</button>
+          <button type="button" class="btn" data-action="open-welcome">Run the setup guide again</button>
+        </div>
+      </section>
+      <section class="card">
+        <h2>Import and export</h2>
+        <div class="stack">
+          <button type="button" class="btn" data-action="bank-import">Import a bank file (CSV)</button>
+          <button type="button" class="btn" data-action="import-actual">Import from Actual Budget</button>
+          <input type="file" id="import-actual-file" accept=".zip,application/zip,.csv,text/csv" hidden>
+          <p class="hint">Use Actual's <strong>Settings → Export data</strong> (.zip) to bring over everything, including budgeted amounts.</p>
+          <div class="row">
+            <button type="button" class="btn" data-action="export">Export backup</button>
+            <button type="button" class="btn" data-action="import">Import backup</button>
+          </div>
+          <input type="file" id="import-file" accept="application/json,.json" hidden>
+        </div>
+      </section>
+    </div>
+    <div class="settings-col">
+      <section class="card sharing">
+        <h2>Sharing</h2>
+        <ul id="share-list" class="tx-list"></ul>
+        <button type="button" class="btn" data-action="new-share">Share envelopes with someone</button>
+        <p class="hint">They sign in with their own account and see only the envelopes you pick. You decide whether they can add spending. Only you assign money.</p>
+      </section>
+      <section class="card account">
+        <h2>Your account</h2>
+        <p class="acct-email"><span id="account"></span></p>
+        <form id="password-form" class="stack" autocomplete="off">
+          <h3 class="sub-h">Change password</h3>
+          <label>Current password <input type="password" name="current" required autocomplete="current-password"></label>
+          <label>New password <input type="password" name="next" required minlength="8" autocomplete="new-password"></label>
+          <label>Repeat new password <input type="password" name="repeat" required minlength="8" autocomplete="new-password"></label>
+          <p id="password-msg" class="auth-message" hidden></p>
+          <button type="submit" class="btn">Change password</button>
+          <p class="hint">Your other devices are signed out when the password changes.</p>
+        </form>
+        <div class="stack twofa">
+          <h3 class="sub-h">Two-step sign-in</h3>
+          <p id="twofa-status" class="hint"></p>
+          <button type="button" class="btn" id="twofa-btn" data-action="twofa"></button>
+        </div>
+        <div class="row">
+          <button type="button" class="btn" data-action="logout">Sign out</button>
+        </div>
+        <details class="danger-zone">
+          <summary>Danger zone</summary>
+          <button type="button" class="btn danger" data-action="reset">Erase all budget data</button>
+          <button type="button" class="btn danger" data-action="delete-my-account">Delete my account</button>
+        </details>
+      </section>
+      <section class="card">
+        <p id="sync" class="hint sync" aria-live="polite"></p>
+        <p id="version" class="hint version"></p>
+      </section>
+    </div>
+  </section>
   </div>
 
-  <dialog id="target-dialog" class="target-dialog">
+  <button type="button" class="fab" data-action="new-tx" hidden>+ Transaction</button>
+  <nav class="bottom-nav" aria-label="Sections" hidden>
+    <button type="button" data-view="budget"><b>Budget</b></button>
+    <button type="button" data-view="accounts"><b>Accounts</b></button>
+    <button type="button" class="plus" data-action="new-tx" aria-label="Add a transaction">+</button>
+    <button type="button" data-view="goals"><b>Goals</b></button>
+    <button type="button" data-action="more"><b>More</b></button>
+  </nav>
+
+  <dialog id="more-dialog" class="sheet">
+    <div class="sheet-grid">
+      <button type="button" class="btn" data-view="reports">Reports</button>
+      <button type="button" class="btn" data-view="loans">Loans</button>
+      <button type="button" class="btn nav-shared" data-view="shared" hidden>Shared</button>
+      <button type="button" class="btn" data-view="search">Search</button>
+      <button type="button" class="btn" data-view="settings">Settings</button>
+      <button type="button" class="btn" data-action="close-dialog">Close</button>
+    </div>
+  </dialog>
+
+  <dialog id="tx-dialog" class="drawer">
+    <form id="tx-form" class="stack" autocomplete="off">
+      <div class="drawer-head">
+        <h2 id="tx-heading">Add transaction</h2>
+        <button type="button" class="icon" data-action="close-tx" aria-label="Close">&times;</button>
+      </div>
+      <div class="segmented" role="radiogroup" aria-label="Type">
+        <label><input type="radio" name="kind" value="spend" checked><span>Spending</span></label>
+        <label><input type="radio" name="kind" value="income"><span>Income</span></label>
+        <label><input type="radio" name="kind" value="transfer"><span>Transfer</span></label>
+      </div>
+      <label>Amount <input type="text" name="amount" inputmode="decimal" required placeholder="0.00" class="amount-input"></label>
+      <label>Payee <input type="text" name="payee" maxlength="80" list="payee-list" placeholder="Where it went or came from"></label>
+      <datalist id="payee-list"></datalist>
+      <label id="tx-envelope-field">Envelope
+        <select name="envelopeId" id="tx-envelope"></select>
+      </label>
+      <div id="split-box" class="split-box" hidden>
+        <div class="split-head"><span>Split across envelopes</span><span id="split-left" class="hint"></span></div>
+        <div id="split-rows"></div>
+        <button type="button" class="link" data-action="add-split">+ Add a line</button>
+      </div>
+      <button type="button" class="link" id="split-toggle" data-action="split-tx">Split across envelopes</button>
+      <label>Date <input type="date" name="date" required></label>
+      <label><span id="tx-account-label">Account</span> <select name="accountId" id="tx-account"></select></label>
+      <label id="tx-to-field" hidden>To account <select name="toAccountId" id="tx-to"></select></label>
+      <label>Note <input type="text" name="note" maxlength="140" placeholder="Optional"></label>
+      <label id="tx-repeat-field">Repeat
+        <select name="repeat">
+          <option value="">Does not repeat</option>
+          <option value="weekly">Every week</option>
+          <option value="biweekly">Every 2 weeks</option>
+          <option value="monthly">Every month</option>
+          <option value="yearly">Every year</option>
+        </select>
+      </label>
+      <div class="receipt-field">
+        <label class="btn sm file-btn">📎 Add a receipt photo<input type="file" id="tx-receipt" accept="image/*" hidden></label>
+        <div id="tx-receipt-preview" class="receipt-preview"></div>
+      </div>
+      <p id="tx-error" class="auth-message" hidden></p>
+      <div class="row">
+        <button type="submit" class="btn primary grow" id="tx-submit">Save transaction</button>
+        <button type="button" class="btn" id="tx-cancel" data-action="close-tx">Cancel</button>
+      </div>
+      <button type="button" class="link danger-link" id="tx-delete" data-action="delete-editing-tx" hidden>Delete this transaction</button>
+    </form>
+  </dialog>
+
+  <dialog id="env-dialog" class="modal">
+    <form id="env-form" class="stack" autocomplete="off">
+      <h2>New envelope</h2>
+      <label>Name <input type="text" name="name" maxlength="60" required placeholder="🛒 Groceries"></label>
+      <label>Group <input type="text" name="group" maxlength="40" list="group-list" placeholder="Everyday"></label>
+      <datalist id="group-list"></datalist>
+      <label>Target balance <span class="optional">(optional)</span>
+        <input type="text" name="goal" inputmode="decimal" placeholder="e.g. 500.00">
+      </label>
+      <p class="hint">Tip: start the name with an emoji and it becomes the envelope's sticker.</p>
+      <div class="row">
+        <button type="submit" class="btn primary">Add envelope</button>
+        <button type="button" class="btn" data-action="close-dialog">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="move-dialog" class="modal">
+    <form id="move-form" class="stack" autocomplete="off">
+      <h2 id="move-title">Move money</h2>
+      <p class="hint" id="move-info"></p>
+      <label>From <select name="from"></select></label>
+      <label>To <select name="to"></select></label>
+      <label>Amount <input type="text" name="amount" inputmode="decimal" required placeholder="0.00"></label>
+      <p id="move-error" class="auth-message" hidden></p>
+      <div class="row">
+        <button type="submit" class="btn primary">Move</button>
+        <button type="button" class="btn" data-action="close-dialog">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="color-dialog" class="modal small">
+    <h2 id="color-title">Group colour</h2>
+    <div id="color-swatches" class="swatches"></div>
+    <div class="row"><button type="button" class="btn" data-action="close-dialog">Close</button></div>
+  </dialog>
+
+  <dialog id="target-dialog" class="modal">
     <form id="target-form" class="stack" autocomplete="off">
       <h2 id="target-title">Envelope</h2>
       <p id="target-error" class="auth-message" hidden></p>
@@ -375,20 +552,20 @@
         <input type="month" name="next">
       </label>
       <div class="row">
-        <button type="submit" class="primary">Save</button>
-        <button type="button" data-action="close-target">Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
+        <button type="button" class="btn" data-action="close-target">Cancel</button>
       </div>
       <details class="danger-zone">
         <summary>Delete this envelope</summary>
         <label id="move-to-field">Move its transactions to
           <select name="moveTo"></select>
         </label>
-        <button type="button" class="danger" data-action="delete-envelope">Delete envelope</button>
+        <button type="button" class="btn danger" data-action="delete-envelope">Delete envelope</button>
       </details>
     </form>
   </dialog>
 
-  <dialog id="reconcile-dialog" class="target-dialog">
+  <dialog id="reconcile-dialog" class="modal">
     <form id="reconcile-form" class="stack" autocomplete="off">
       <h2 id="reconcile-title">Reconcile</h2>
       <p class="hint" id="reconcile-info"></p>
@@ -396,13 +573,13 @@
       <label>Balance your bank shows <input type="text" name="bank" inputmode="decimal" required></label>
       <label>As of <input type="date" name="date" required></label>
       <div class="row">
-        <button type="submit" class="primary">Reconcile</button>
-        <button type="button" data-action="close-reconcile">Cancel</button>
+        <button type="submit" class="btn primary">Reconcile</button>
+        <button type="button" class="btn" data-action="close-reconcile">Cancel</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="share-dialog" class="target-dialog">
+  <dialog id="share-dialog" class="modal">
     <form id="share-form" class="stack" autocomplete="off">
       <h2 id="share-title">Share envelopes</h2>
       <p id="share-error" class="auth-message" hidden></p>
@@ -415,14 +592,14 @@
       </label>
       <fieldset class="pick-list share-picks" id="share-picks"></fieldset>
       <div class="row">
-        <button type="submit" class="primary">Share</button>
-        <button type="button" data-action="close-share">Cancel</button>
-        <button type="button" class="danger" id="share-stop" data-action="stop-share">Stop sharing</button>
+        <button type="submit" class="btn primary">Share</button>
+        <button type="button" class="btn" data-action="close-share">Cancel</button>
+        <button type="button" class="btn danger" id="share-stop" data-action="stop-share">Stop sharing</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="goal-dialog" class="target-dialog">
+  <dialog id="goal-dialog" class="modal">
     <form id="goal-form" class="stack" autocomplete="off">
       <h2 id="goal-title">New goal</h2>
       <p id="goal-error" class="auth-message" hidden></p>
@@ -438,14 +615,14 @@
       </label>
       <fieldset class="pick-list" id="goal-picks"></fieldset>
       <div class="row">
-        <button type="submit" class="primary">Save</button>
-        <button type="button" data-action="close-goal">Cancel</button>
-        <button type="button" class="danger" id="goal-delete" data-action="delete-goal">Delete goal</button>
+        <button type="submit" class="btn primary">Save</button>
+        <button type="button" class="btn" data-action="close-goal">Cancel</button>
+        <button type="button" class="btn danger" id="goal-delete" data-action="delete-goal">Delete goal</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="loan-dialog" class="target-dialog">
+  <dialog id="loan-dialog" class="modal">
     <form id="loan-form" class="stack" autocomplete="off">
       <h2 id="loan-title">Loan details</h2>
       <p id="loan-error" class="auth-message" hidden></p>
@@ -461,16 +638,56 @@
       <label>Start date <span class="optional">(optional)</span> <input type="date" name="startDate"></label>
       <p class="hint">Record payments as transfers from your checking account to the loan account. If your bank adds interest to the balance, use "Record interest" on the Loans page each month.</p>
       <div class="row">
-        <button type="submit" class="primary">Save</button>
-        <button type="button" data-action="close-loan">Cancel</button>
-        <button type="button" class="danger" id="loan-remove" data-action="remove-loan">Stop tracking</button>
+        <button type="submit" class="btn primary">Save</button>
+        <button type="button" class="btn" data-action="close-loan">Cancel</button>
+        <button type="button" class="btn danger" id="loan-remove" data-action="remove-loan">Stop tracking</button>
       </div>
     </form>
   </dialog>
 
+  <dialog id="csv-dialog" class="modal wide">
+    <div class="stack" id="csv-body"></div>
+  </dialog>
+
+  <dialog id="twofa-dialog" class="modal">
+    <div class="stack" id="twofa-body"></div>
+  </dialog>
+
+  <dialog id="welcome-dialog" class="modal welcome">
+    <div class="stack" id="welcome-body"></div>
+  </dialog>
+
+  <dialog id="keys-dialog" class="modal">
+    <h2>Keyboard shortcuts</h2>
+    <dl class="keys">
+      <div><dt><kbd>N</kbd></dt><dd>New transaction</dd></div>
+      <div><dt><kbd>E</kbd></dt><dd>New envelope</dd></div>
+      <div><dt><kbd>M</kbd></dt><dd>Move money</dd></div>
+      <div><dt><kbd>/</kbd></dt><dd>Search transactions</dd></div>
+      <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Previous and next month</dd></div>
+      <div><dt><kbd>T</kbd></dt><dd>Jump to this month</dd></div>
+      <div><dt><kbd>1</kbd>–<kbd>5</kbd></dt><dd>Budget, Accounts, Reports, Goals, Loans</dd></div>
+      <div><dt><kbd>Ctrl</kbd> <kbd>Z</kbd></dt><dd>Undo the last change</dd></div>
+      <div><dt><kbd>?</kbd></dt><dd>Show this list</dd></div>
+      <div><dt><kbd>Esc</kbd></dt><dd>Close a dialog</dd></div>
+    </dl>
+    <div class="row"><button type="button" class="btn" data-action="close-dialog">Close</button></div>
+  </dialog>
+
+  <dialog id="receipt-dialog" class="modal receipt-view">
+    <img id="receipt-img" alt="Receipt">
+    <div class="row">
+      <button type="button" class="btn" data-action="close-dialog">Close</button>
+      <button type="button" class="btn danger" id="receipt-delete" data-action="delete-receipt">Remove receipt</button>
+    </div>
+  </dialog>
+
+  <script src="src/vendor/qrcode.js"></script>
   <script src="src/budget.js"></script>
   <script src="src/loans.js"></script>
+  <script src="src/bank-csv.js"></script>
   <script src="src/charts.js"></script>
+  <script src="src/sounds.js"></script>
   <script src="src/app.js"></script>
 </body>
 </html>

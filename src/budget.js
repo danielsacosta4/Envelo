@@ -25,7 +25,7 @@
   };
 
   function create() {
-    return { version: 1, currency: 'EUR', accounts: [], envelopes: [], transactions: [], assignments: {}, recurring: [], hiddenGroups: [], goals: [] };
+    return { version: 1, currency: 'EUR', accounts: [], envelopes: [], transactions: [], assignments: {}, recurring: [], hiddenGroups: [], goals: [], groupColors: {} };
   }
 
   // Older budgets have no accounts. Put their transactions in one "Main account".
@@ -34,6 +34,7 @@
     if (!Array.isArray(b.recurring)) b.recurring = [];
     if (!Array.isArray(b.hiddenGroups)) b.hiddenGroups = [];
     if (!Array.isArray(b.goals)) b.goals = [];
+    if (!b.groupColors || typeof b.groupColors !== 'object' || Array.isArray(b.groupColors)) b.groupColors = {};
     if (b.transactions.some((t) => !t.accountId)) {
       const main = b.accounts[0] || addAccount(b, { name: 'Main account' });
       for (const t of b.transactions) if (!t.accountId) t.accountId = main.id;
@@ -373,7 +374,89 @@
   function removeTransaction(b, id) {
     const t = b.transactions.find((x) => x.id === id);
     if (!t) return;
-    b.transactions = b.transactions.filter((x) => x.id !== id && !(t.transferId && x.transferId === t.transferId));
+    b.transactions = b.transactions.filter((x) => x.id !== id
+      && !(t.transferId && x.transferId === t.transferId)
+      && !(t.splitId && x.splitId === t.splitId));
+  }
+
+  // Split transactions: one purchase spread over several envelopes. Each line
+  // is stored as its own spending transaction sharing a splitId, so every
+  // total and report works without knowing about splits.
+  //   lines: [{ envelopeId, amount }] with positive cents
+  function addSplit(b, { date, payee, note, accountId, lines, splitId, keepId, receiptId }) {
+    if (!Array.isArray(lines) || lines.length < 2) throw new Error('A split needs at least two lines.');
+    const acctId = accountId || defaultAccountId(b);
+    if (!isOnBudget(b, acctId)) throw new Error('Splits are for on-budget accounts.');
+    const legs = lines.map((l, i) => {
+      if (!Number.isInteger(l.amount) || l.amount <= 0) throw new Error(`Line ${i + 1} needs an amount.`);
+      return buildTransaction(b, { kind: 'spend', date, payee, note, amount: l.amount, envelopeId: l.envelopeId, accountId: acctId })[0];
+    });
+    const sid = splitId || newId();
+    legs.forEach((leg, i) => {
+      leg.id = i === 0 && keepId ? keepId : newId();
+      leg.splitId = sid;
+      if (i === 0 && receiptId) leg.receiptId = receiptId;
+    });
+    b.transactions.push(...legs);
+    return legs[0];
+  }
+  function splitLegs(b, id) {
+    const t = b.transactions.find((x) => x.id === id);
+    if (!t || !t.splitId) return t ? [t] : [];
+    return b.transactions.filter((x) => x.splitId === t.splitId);
+  }
+
+  // Move money between envelopes this month. null means Ready to Assign.
+  function moveMoney(b, month, fromId, toId, cents) {
+    if (!Number.isInteger(cents) || cents <= 0) throw new Error('Enter an amount to move.');
+    if (fromId === toId) throw new Error('Pick two different places.');
+    if (fromId) setAssigned(b, month, fromId, assignedIn(b, month, fromId) - cents);
+    if (toId) setAssigned(b, month, toId, assignedIn(b, month, toId) + cents);
+  }
+
+  // Payees: names used before, most used first, and what they were last used for.
+  function payees(b) {
+    const count = new Map();
+    for (const t of b.transactions) {
+      const name = (t.payee || '').trim();
+      if (!name || t.transferId || name === 'Starting balance' || t.adjustment) continue;
+      count.set(name, (count.get(name) || 0) + 1);
+    }
+    return [...count].sort((x, y) => y[1] - x[1]).map(([name]) => name);
+  }
+  function payeeMemory(b, payee) {
+    const key = String(payee || '').trim().toLowerCase();
+    if (!key) return null;
+    let best = null;
+    for (const t of b.transactions) {
+      if ((t.payee || '').trim().toLowerCase() !== key || t.transferId) continue;
+      if (!best || t.date > best.date) best = t;
+    }
+    if (!best) return null;
+    return {
+      kind: best.envelopeId ? 'spend' : 'income',
+      envelopeId: best.envelopeId && b.envelopes.some((e) => e.id === best.envelopeId) ? best.envelopeId : null,
+      accountId: best.accountId,
+      amount: Math.abs(best.amount),
+    };
+  }
+
+  // Find transactions. q matches payee, note, envelope, account or amount.
+  function searchTransactions(b, { q = '', accountId = '', envelopeId = '', from = '', to = '' } = {}) {
+    const envName = new Map(b.envelopes.map((e) => [e.id, e.name]));
+    const acctName = new Map((b.accounts || []).map((a) => [a.id, a.name]));
+    const needle = String(q).trim().toLowerCase();
+    const amountNeedle = needle.replace(',', '.').replace(/[^\d.]/g, '');
+    return b.transactions.filter((t) => {
+      if (accountId && t.accountId !== accountId) return false;
+      if (envelopeId && t.envelopeId !== envelopeId) return false;
+      if (from && t.date < from) return false;
+      if (to && t.date > to) return false;
+      if (!needle) return true;
+      const text = `${t.payee} ${t.note} ${envName.get(t.envelopeId) || ''} ${acctName.get(t.accountId) || ''}`.toLowerCase();
+      if (text.includes(needle)) return true;
+      return !!amountNeedle && /^\d+(\.\d+)?$/.test(amountNeedle) && (Math.abs(t.amount) / 100).toFixed(2).startsWith(amountNeedle);
+    }).sort((x, y) => (x.date < y.date ? 1 : x.date > y.date ? -1 : 0));
   }
 
   // Recurring transactions
@@ -680,6 +763,7 @@
       recurring: Array.isArray(obj.recurring) ? obj.recurring : [],
       hiddenGroups: Array.isArray(obj.hiddenGroups) ? obj.hiddenGroups : [],
       goals: Array.isArray(obj.goals) ? obj.goals : [],
+      groupColors: obj.groupColors && typeof obj.groupColors === 'object' && !Array.isArray(obj.groupColors) ? obj.groupColors : {},
     });
   }
 
@@ -980,6 +1064,130 @@
     return { value, progress, remaining, rate, eta, monthsLeft, neededPerMonth, onTrack, milestone, milestones: reached, history };
   }
 
+  // Group colours: one of GROUP_COLORS poster colours per group, kept in
+  // b.groupColors by group name. New groups get the least used colour that
+  // differs from the group above them, so neighbours never match.
+  const GROUP_COLORS = 16;
+  function groupNames(b) {
+    return [...new Set(b.envelopes.map((e) => e.group))];
+  }
+  function ensureGroupColors(b) {
+    if (!b.groupColors || typeof b.groupColors !== 'object') b.groupColors = {};
+    const names = groupNames(b);
+    let changed = false;
+    names.forEach((name, i) => {
+      const c = b.groupColors[name];
+      if (Number.isInteger(c) && c >= 0 && c < GROUP_COLORS) return;
+      const used = new Array(GROUP_COLORS).fill(0);
+      for (const n of names) {
+        const v = b.groupColors[n];
+        if (Number.isInteger(v) && v >= 0 && v < GROUP_COLORS) used[v]++;
+      }
+      const above = i > 0 ? b.groupColors[names[i - 1]] : -1;
+      let best = -1;
+      for (let k = 0; k < GROUP_COLORS; k++) {
+        if (k === above) continue;
+        if (best < 0 || used[k] < used[best]) best = k;
+      }
+      b.groupColors[name] = best;
+      changed = true;
+    });
+    // Forget colours of groups that no longer exist.
+    for (const n of Object.keys(b.groupColors)) {
+      if (!names.includes(n)) { delete b.groupColors[n]; changed = true; }
+    }
+    return changed;
+  }
+  function setGroupColor(b, group, color) {
+    if (!Number.isInteger(color) || color < 0 || color >= GROUP_COLORS) throw new Error('Unknown colour.');
+    if (!groupNames(b).includes(group)) throw new Error('Unknown group.');
+    b.groupColors[group] = color;
+  }
+
+  // Monthly recap: what happened in `month`, including overspending and
+  // envelopes that keep running short.
+  function recap(b, month) {
+    const prev = shiftMonth(month, -1);
+    const r = report(b, month, 2);
+    const income = r.income[1];
+    const spending = r.spending[1];
+    const view = monthView(b, month);
+    const envs = view.groups.flatMap((g) => g.envelopes);
+    const assigned = envs.reduce((s, e) => s + e.assigned, 0);
+    const overspent = envs.filter((e) => e.available < 0).map((e) => {
+      const env = b.envelopes.find((x) => x.id === e.id);
+      return { id: e.id, name: e.name, amount: -e.available, carried: !!(env && env.carryOverspending) };
+    }).sort((x, y) => y.amount - x.amount);
+    // Envelopes overspent in at least 3 of the last 4 months.
+    const hints = [];
+    for (const env of b.envelopes) {
+      let count = 0;
+      let spent = 0;
+      for (let k = 0; k < 4; k++) {
+        const m = shiftMonth(month, -k);
+        const st = envelopeStatus(b, env.id, m);
+        if (st.available < 0) count++;
+        if (k < 3) spent -= st.activity;
+      }
+      if (count >= 3) {
+        const avg = Math.round(spent / 3);
+        const suggest = Math.ceil(avg / 500) * 500; // round up to 5
+        hints.push({ id: env.id, name: env.name, months: count, suggest });
+      }
+    }
+    const top = r.rows.map((row) => ({ id: row.id, name: row.name, amount: row.perMonth[1], before: row.perMonth[0] }))
+      .filter((x) => x.amount > 0).sort((x, y) => y.amount - x.amount).slice(0, 5);
+    const txs = b.transactions.filter((t) => monthOf(t.date) === month && t.envelopeId && t.amount < 0);
+    const biggest = txs.sort((x, y) => x.amount - y.amount)[0] || null;
+    const goals = (b.goals || []).map((g) => {
+      const now = goalValue(b, g, month);
+      const before = goalValue(b, g, prev);
+      return { id: g.id, name: g.name, now, change: now - before, amount: g.amount, progress: Math.max(0, Math.min(1, now / g.amount)) };
+    });
+    const worth = netWorthSeries(b, [prev, month]);
+    return {
+      month,
+      income,
+      spending,
+      saved: income - spending,
+      savedBefore: r.income[0] - r.spending[0],
+      spendingBefore: r.spending[0],
+      assigned,
+      readyToAssign: readyToAssign(b, month),
+      overspent,
+      hints,
+      top,
+      biggest: biggest ? { payee: biggest.payee, amount: -biggest.amount, date: biggest.date, envelopeId: biggest.envelopeId } : null,
+      transactions: b.transactions.filter((t) => monthOf(t.date) === month).length,
+      goals,
+      netWorth: worth[1].total,
+      netWorthChange: worth[1].total - worth[0].total,
+    };
+  }
+
+  // Streaks, counted back from `month` (inclusive) while the condition holds.
+  function streaks(b, month) {
+    const first = firstMonth(b);
+    if (!first) return { noOverspending: 0, allAssigned: 0, saving: 0 };
+    const count = (test) => {
+      let n = 0;
+      for (let m = month; m >= first && n < 240; m = shiftMonth(m, -1)) {
+        if (!test(m)) break;
+        n++;
+      }
+      return n;
+    };
+    const hasActivity = (m) => b.transactions.some((t) => monthOf(t.date) === m) || !!b.assignments[m];
+    return {
+      noOverspending: count((m) => hasActivity(m) && b.envelopes.every((e) => envelopeStatus(b, e.id, m).available >= 0)),
+      allAssigned: count((m) => hasActivity(m) && readyToAssign(b, m) === 0),
+      saving: count((m) => {
+        const r = report(b, m, 1);
+        return hasActivity(m) && r.income[0] > 0 && r.income[0] > r.spending[0];
+      }),
+    };
+  }
+
   const api = {
     create, addEnvelope, removeEnvelope, addTransaction, removeTransaction,
     setAssigned, assignedIn, readyToAssign, envelopeStatus, monthView,
@@ -992,6 +1200,8 @@
     netWorthSeries, groupSpending, monthForecast, targetForecasts,
     parseCsv, importTransactionsCsv,
     addGoal, updateGoal, removeGoal, goalValue, goalStatus,
+    GROUP_COLORS, ensureGroupColors, setGroupColor, groupNames,
+    addSplit, splitLegs, moveMoney, payees, payeeMemory, searchTransactions, recap, streaks, monthEnd,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

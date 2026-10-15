@@ -399,3 +399,152 @@ test('open tabs get live events when the budget changes', async () => {
     await s.close();
   }
 });
+
+const totp = require('../server/totp.js');
+
+test('the data file is encrypted at rest and still loads after a restart', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'envelo-test-'));
+  const keyFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'envelo-key-')), 'secret.key');
+  const boot = async () => {
+    const server = createApp({ dataDir, publicDir: ROOT, keyFile });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    return { server, base: `http://127.0.0.1:${server.address().port}` };
+  };
+  let { server, base } = await boot();
+  const call = client(base);
+  await call('POST', '/api/register', { email: 'enc@example.com', password: 'longenough1' });
+  await call('PUT', '/api/budget', sampleBudget());
+  const raw = fs.readFileSync(path.join(dataDir, 'db.json'));
+  assert.equal(raw.subarray(0, 4).toString(), 'ENV1');
+  assert.ok(!raw.includes(Buffer.from('Groceries')));
+  assert.ok(!raw.includes(Buffer.from('enc@example.com')));
+  await new Promise((r) => { server.closeAllConnections?.(); server.close(r); });
+  ({ server, base } = await boot());
+  const again = client(base);
+  await again('POST', '/api/login', { email: 'enc@example.com', password: 'longenough1' });
+  assert.equal((await again('GET', '/api/budget')).body.budget.envelopes[0].name, 'Groceries');
+  await new Promise((r) => { server.closeAllConnections?.(); server.close(r); });
+});
+
+test('changing the password signs out other devices', async () => {
+  const s = await start();
+  try {
+    const a = client(s.base);
+    const b = client(s.base);
+    await a('POST', '/api/register', { email: 'pw@example.com', password: 'longenough1' });
+    await b('POST', '/api/login', { email: 'pw@example.com', password: 'longenough1' });
+    assert.equal((await a('POST', '/api/password', { current: 'wrong-one!', next: 'brand-new-pass' })).status, 403);
+    assert.equal((await a('POST', '/api/password', { current: 'longenough1', next: 'short' })).status, 400);
+    assert.equal((await a('POST', '/api/password', { current: 'longenough1', next: 'brand-new-pass' })).status, 200);
+    assert.equal((await a('GET', '/api/me')).status, 200);
+    assert.equal((await b('GET', '/api/me')).status, 401);
+    assert.equal((await client(s.base)('POST', '/api/login', { email: 'pw@example.com', password: 'brand-new-pass' })).status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test('two-step sign-in: setup, sign in with a code or a recovery code, and turn off', async () => {
+  const s = await start();
+  try {
+    const a = client(s.base);
+    await a('POST', '/api/register', { email: 'tf@example.com', password: 'longenough1' });
+    const setup = await a('POST', '/api/2fa/setup');
+    assert.match(setup.body.uri, /^otpauth:\/\/totp\/Envelo:tf%40example.com\?secret=/);
+    assert.equal((await a('POST', '/api/2fa/enable', { code: '000000' })).status, 400);
+    const step = Math.floor(Date.now() / 30000);
+    const on = await a('POST', '/api/2fa/enable', { code: totp.codeAt(setup.body.secret, step) });
+    assert.equal(on.status, 200);
+    assert.equal(on.body.recoveryCodes.length, 10);
+    assert.equal(on.body.user.twofa, true);
+
+    const b = client(s.base);
+    const noCode = await b('POST', '/api/login', { email: 'tf@example.com', password: 'longenough1' });
+    assert.equal(noCode.status, 401);
+    assert.equal(noCode.body.needCode, true);
+    assert.equal((await b('GET', '/api/me')).status, 401);
+    // The code used to enable cannot be used again.
+    assert.equal((await b('POST', '/api/login', { email: 'tf@example.com', password: 'longenough1', code: totp.codeAt(setup.body.secret, step) })).status, 401);
+    const rc = on.body.recoveryCodes[0];
+    assert.equal((await b('POST', '/api/login', { email: 'tf@example.com', password: 'longenough1', code: rc.toLowerCase() })).status, 200);
+    assert.equal((await b('GET', '/api/me')).body.user.recoveryLeft, 9);
+    // A recovery code works once.
+    assert.equal((await client(s.base)('POST', '/api/login', { email: 'tf@example.com', password: 'longenough1', code: rc })).status, 401);
+
+    assert.equal((await a('POST', '/api/2fa/disable', { password: 'nope-nope' })).status, 403);
+    assert.equal((await a('POST', '/api/2fa/disable', { password: 'longenough1' })).body.user.twofa, false);
+    assert.equal((await client(s.base)('POST', '/api/login', { email: 'tf@example.com', password: 'longenough1' })).status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test('admin commands: temporary password must be changed at the next sign-in', async () => {
+  const s = await start();
+  try {
+    const a = client(s.base);
+    await a('POST', '/api/register', { email: 'adm@example.com', password: 'longenough1' });
+    const token = fs.readFileSync(path.join(s.dataDir, 'admin.token'), 'utf8');
+    const admin = (cmd, body, t = token) => fetch(`${s.base}/api/admin/${cmd}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Token': t }, body: JSON.stringify(body),
+    }).then(async (r) => ({ status: r.status, body: await r.json() }));
+    assert.equal((await admin('users', {}, 'x'.repeat(token.length))).status, 403);
+    assert.deepEqual((await admin('users', {})).body.users.map((u) => u.email), ['adm@example.com']);
+    const reset = await admin('reset-password', { email: 'adm@example.com' });
+    assert.equal(reset.status, 200);
+    assert.equal((await a('GET', '/api/me')).status, 401);
+    const b = client(s.base);
+    const first = await b('POST', '/api/login', { email: 'adm@example.com', password: reset.body.temporaryPassword });
+    assert.equal(first.status, 403);
+    assert.equal(first.body.needNewPassword, true);
+    assert.equal((await b('POST', '/api/login', { email: 'adm@example.com', password: reset.body.temporaryPassword, newPassword: 'my-new-password' })).status, 200);
+    assert.equal((await client(s.base)('POST', '/api/login', { email: 'adm@example.com', password: 'my-new-password' })).status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test('receipts are stored encrypted, only for their owner, and go with a deleted account', async () => {
+  const s = await start();
+  try {
+    const a = client(s.base);
+    await a('POST', '/api/register', { email: 'rc@example.com', password: 'longenough1' });
+    const image = Buffer.concat([Buffer.from('RIFF\0\0\0\0WEBPVP8 '), Buffer.alloc(200, 7)]);
+    const up = await fetch(`${s.base}/api/receipts`, { method: 'POST', headers: { Cookie: a.cookie(), 'Content-Type': 'image/webp' }, body: image });
+    assert.equal(up.status, 201);
+    const { id } = await up.json();
+    const bad = await fetch(`${s.base}/api/receipts`, { method: 'POST', headers: { Cookie: a.cookie(), 'Content-Type': 'text/html' }, body: 'x' });
+    assert.equal(bad.status, 415);
+    const got = await fetch(`${s.base}/api/receipts/${id}`, { headers: { Cookie: a.cookie() } });
+    assert.equal(got.headers.get('content-type'), 'image/webp');
+    assert.ok(Buffer.from(await got.arrayBuffer()).equals(image));
+    const files = fs.readdirSync(path.join(s.dataDir, 'receipts'), { recursive: true }).filter((f) => String(f).endsWith('.bin'));
+    assert.equal(files.length, 1);
+    assert.ok(!fs.readFileSync(path.join(s.dataDir, 'receipts', String(files[0]))).includes(Buffer.from('WEBP')));
+    const other = client(s.base);
+    await other('POST', '/api/register', { email: 'other@example.com', password: 'longenough1' });
+    assert.equal((await fetch(`${s.base}/api/receipts/${id}`, { headers: { Cookie: other.cookie() } })).status, 404);
+
+    assert.equal((await a('POST', '/api/account/delete', { password: 'wrong-password' })).status, 403);
+    assert.equal((await a('POST', '/api/account/delete', { password: 'longenough1' })).status, 200);
+    assert.equal((await client(s.base)('POST', '/api/login', { email: 'rc@example.com', password: 'longenough1' })).status, 401);
+    assert.equal(fs.readdirSync(path.join(s.dataDir, 'receipts')).length, 0);
+  } finally {
+    await s.close();
+  }
+});
+
+test('the installable-app files are served from the root', async () => {
+  const s = await start();
+  try {
+    const m = await fetch(`${s.base}/manifest.webmanifest`);
+    assert.equal(m.status, 200);
+    assert.match(m.headers.get('content-type'), /manifest\+json/);
+    const sw = await fetch(`${s.base}/sw.js`);
+    assert.equal(sw.status, 200);
+    assert.equal(sw.headers.get('service-worker-allowed'), '/');
+    assert.match((await fetch(`${s.base}/`)).headers.get('content-security-policy'), /default-src 'self'/);
+  } finally {
+    await s.close();
+  }
+});

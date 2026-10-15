@@ -23,6 +23,8 @@ fi
 : "${REF:?REF is not set}"
 : "${PORT:?PORT is not set}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+# Console autologin only makes sense in a container; the generic installer turns it off.
+AUTOLOGIN="${AUTOLOGIN:-1}"
 
 msg_info() { printf '  \033[1;33m…\033[0m %s\n' "$*"; }
 msg_ok()   { printf '  \033[1;32m✔\033[0m %s\n' "$*"; }
@@ -47,6 +49,15 @@ fi
 echo "Downloading Envelo ($REF)..."
 curl -fsSL "${AUTH[@]}" "https://codeload.github.com/$REPO/tar.gz/refs/heads/$REF" \
   | tar xz -C "$TMP" --strip-components=1
+# Keep a copy of the data from just before this update (the last 5 are kept).
+DATA_DIR="${DATA_DIR:-/var/lib/envelo}"
+if [[ -f "$DATA_DIR/db.json" ]]; then
+  mkdir -p "$DATA_DIR/backups"
+  OLD_VERSION="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' /opt/envelo/package.json 2>/dev/null || true)"
+  cp -p "$DATA_DIR/db.json" "$DATA_DIR/backups/pre-update-${OLD_VERSION:-unknown}-$(date +%Y%m%d-%H%M%S).json"
+  chown -R envelo:envelo "$DATA_DIR/backups" 2>/dev/null || true
+  ls -1t "$DATA_DIR"/backups/pre-update-*.json 2>/dev/null | tail -n +6 | xargs -r rm -f
+fi
 rm -rf /opt/envelo.new && mkdir -p /opt/envelo.new
 cp -r "$TMP/server" "$TMP/src" "$TMP/index.html" /opt/envelo.new/
 [[ -f "$TMP/package.json" ]] && cp "$TMP/package.json" /opt/envelo.new/
@@ -94,6 +105,7 @@ ExecStart=/usr/bin/node /opt/envelo/server/server.js
 EnvironmentFile=/etc/envelo/envelo.env
 Environment=HOST=0.0.0.0
 Environment=DATA_DIR=/var/lib/envelo
+Environment=KEY_FILE=/etc/envelo/secret.key
 Restart=on-failure
 User=envelo
 Group=envelo
@@ -133,7 +145,7 @@ EOF
 # Installed by Envelo. Shows the address of this container on login.
 if [ -t 1 ]; then
   ENVELO_IP="\$(hostname -I 2>/dev/null | awk '{print \$1}')"
-  printf '\n  Envelo is running.\n  Internal IP:        %s\n  Open in a browser:  http://%s$port_suffix\n  Update Envelo:      update\n\n' "\${ENVELO_IP:-unknown}" "\${ENVELO_IP:-<container-ip>}"
+  printf '\n  Envelo is running.\n  Internal IP:        %s\n  Open in a browser:  http://%s$port_suffix\n  Update Envelo:      update\n  Admin commands:     envelo\n\n' "\${ENVELO_IP:-unknown}" "\${ENVELO_IP:-<container-ip>}"
 fi
 EOF
 
@@ -148,6 +160,56 @@ EOF
   systemctl restart console-getty.service >/dev/null 2>&1 || true
 }
 
+# Encryption key for the data at rest. It lives in /etc/envelo, outside the
+# data folder and its backups. A key an older version created next to the
+# data is moved here, so data encrypted with it stays readable.
+install_key() {
+  local key=/etc/envelo/secret.key old=/var/lib/envelo/secret.key
+  mkdir -p /etc/envelo
+  if [[ ! -f "$key" ]]; then
+    if [[ -f "$old" ]]; then
+      mv "$old" "$key"
+    else
+      (umask 077; head -c 32 /dev/urandom | base64 > "$key")
+    fi
+  fi
+  chown root:envelo "$key"
+  chmod 640 "$key"
+}
+
+# `envelo` admin command: users, reset-password, reset-2fa, delete-user.
+install_cli() {
+  cat > /usr/local/bin/envelo <<'CLI'
+#!/usr/bin/env bash
+# Envelo admin commands. Run `envelo` for help.
+set -a
+. /etc/envelo/envelo.env
+set +a
+export DATA_DIR="${DATA_DIR:-/var/lib/envelo}"
+exec /usr/bin/node /opt/envelo/server/cli.js "$@"
+CLI
+  chmod +x /usr/local/bin/envelo
+  ln -sf /usr/local/bin/envelo /usr/bin/envelo
+}
+
+# Node.js 18 or newer is needed. Debian 12 has it; older systems get Node 20
+# from NodeSource.
+ensure_node() {
+  local major=0
+  if command -v node >/dev/null 2>&1; then
+    major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+  fi
+  if (( major < 18 )); then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get install -y -qq ca-certificates curl gnupg >/dev/null
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+    apt-get update -qq
+    apt-get install -y -qq nodejs >/dev/null
+  fi
+}
+
 install_packages() {
   # sqlite3 reads Actual Budget exports on Node versions without node:sqlite.
   if ! command -v sqlite3 >/dev/null 2>&1; then
@@ -160,9 +222,11 @@ install_packages() {
 if [[ "$MODE" == "--refresh" ]]; then
   install_packages
   install_update_command
+  install_key
+  install_cli
   install_service
-  install_console
-  echo "Container setup refreshed."
+  if [[ "$AUTOLOGIN" == "1" ]]; then install_console; fi
+  echo "Setup refreshed."
   exit 0
 fi
 
@@ -180,6 +244,7 @@ msg_info "Installing Node.js and tools"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq nodejs curl ca-certificates tar sqlite3 >/dev/null
+ensure_node
 msg_ok "Node.js $(node --version) installed"
 
 msg_info "Creating the envelo user and config"
@@ -193,6 +258,7 @@ REPO=$REPO
 REF=$REF
 PORT=$PORT
 GITHUB_TOKEN=$GITHUB_TOKEN
+AUTOLOGIN=$AUTOLOGIN
 EOF
 )
 chmod 600 /etc/envelo/envelo.env
@@ -206,6 +272,11 @@ msg_info "Downloading Envelo ($REF)"
 /usr/local/bin/update >/dev/null
 msg_ok "Envelo code installed in /opt/envelo"
 
+msg_info "Setting up encryption and the admin command"
+install_key
+install_cli
+msg_ok "Data is encrypted with /etc/envelo/secret.key; 'envelo' runs admin commands"
+
 msg_info "Starting the Envelo service"
 install_service
 systemctl daemon-reload
@@ -217,6 +288,8 @@ done
 curl -fsS -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null || die "Envelo did not start. See: journalctl -u envelo"
 msg_ok "Envelo is responding on port $PORT"
 
-msg_info "Enabling console autologin and the address banner"
-install_console
-msg_ok "Console logs in automatically and shows the address"
+if [[ "$AUTOLOGIN" == "1" ]]; then
+  msg_info "Enabling console autologin and the address banner"
+  install_console
+  msg_ok "Console logs in automatically and shows the address"
+fi

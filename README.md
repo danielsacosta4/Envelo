@@ -12,8 +12,8 @@ down. Unspent money rolls over automatically.
   is a one-line install). No subscription, no third party holds your data.
 - **Accounts, synced everywhere.** Sign in from any device and see the same
   budget.
-- **No bank linking required.** Transactions are entered by hand, so there is
-  no aggregator holding your bank credentials.
+- **No bank linking required.** Enter transactions by hand or import your
+  bank's CSV export, so no aggregator ever holds your bank credentials.
 - **Goals show what you still need.** An envelope with a target balance shows
   how much is missing and offers a one-click "Fund goal".
 - **Transparent math.** Available = everything assigned + all activity, so you
@@ -54,6 +54,20 @@ down. Unspent money rolls over automatically.
 - Live sync: changes appear on your other open devices within a second.
 - Share chosen envelopes with another user, who can see them or also add
   spending to them. Only the owner assigns money.
+- Bank CSV import for any bank: the separator, date format, decimal comma and
+  columns are worked out (Revolut and N26 recognised), remembered per account,
+  duplicates skipped and envelopes filled from what each payee was used for.
+- Split transactions, move money between envelopes, cover overspending in a
+  click, payee memory, search across every transaction, undo (Ctrl+Z) and
+  keyboard shortcuts (press ? to see them).
+- Receipt photos on transactions, stored as WebP and encrypted.
+- A monthly recap (including what was overspent and envelopes that keep
+  running short), streaks, and a setup guide for new budgets.
+- Poster design with 16 group colours, three fonts, sounds (off by default)
+  and a celebration when every euro has a job.
+- Installs as an app on your phone and keeps working offline (over HTTPS).
+- Two-step sign-in with an authenticator app, recovery codes, password
+  changes that sign out other devices, and account deletion.
 - Works on phones, with light and dark themes.
 
 ## Run it
@@ -73,11 +87,29 @@ Environment variables:
 | `HOST`           | `0.0.0.0`      | Interface to bind to                                 |
 | `DATA_DIR`       | `./data`       | Where accounts and budgets are stored                |
 | `SECURE_COOKIES` | unset          | Set to `1` when serving over HTTPS (adds `Secure`)   |
+| `KEY_FILE`       | `DATA_DIR/secret.key` | Encryption key for the data (the installers use `/etc/envelo/secret.key`) |
 
 To install on a Proxmox VE host in a new container, run this on the host as root:
 
 ```sh
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/danielsacosta4/Envelo/main/scripts/install-proxmox.sh)"
+```
+
+On any other Debian or Ubuntu machine (a VM, a mini PC, a VPS), as root:
+
+```sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/danielsacosta4/Envelo/main/scripts/install.sh)"
+```
+
+Both install Node.js, SQLite and the Envelo service, and add two commands:
+`update` (get the latest version; your data is backed up first) and `envelo`
+(admin: `envelo users`, `envelo reset-password <email>`,
+`envelo reset-2fa <email>`, `envelo delete-user <email>`).
+
+To try an unreleased branch in a separate test container, set `REF`:
+
+```sh
+REF=some-branch HOSTNAME_CT=envelo-test bash -c "$(curl -fsSL https://raw.githubusercontent.com/danielsacosta4/Envelo/main/scripts/install-proxmox.sh)"
 ```
 
 ## Accounts and data
@@ -87,6 +119,13 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/danielsacosta4/Envelo/ma
 - Sessions last 30 days and are sent as an HttpOnly cookie.
 - Each account only ever reads and writes its own budget.
 - Repeated failed sign-ins are rate limited per IP.
+- Data at rest is encrypted with AES-256-GCM using a key kept outside the
+  data folder (`/etc/envelo/secret.key` with the installers), so copies of the
+  data folder and its backups are unreadable without it. Keep the key with
+  your backups of the container: without it the data cannot be read.
+- Receipts are stored encrypted in `DATA_DIR/receipts/`, per user.
+- Two-step sign-in uses standard 6-digit codes (TOTP) and ten one-time
+  recovery codes. Changing the password signs out every other device.
 - All data is in one JSON file, `DATA_DIR/db.json`, written atomically and
   readable only by the server user.
 - The server keeps a daily copy in `DATA_DIR/backups/`, for the last 14 days.
@@ -123,9 +162,15 @@ validation, rate limiting, static file access) with Node's built-in test runner.
 - `src/budget.js`: pure budgeting logic, integer cents, no DOM
 - `src/loans.js`: loan maths (payments, amortization, loan status)
 - `src/charts.js`: dependency-free SVG charts
+- `src/bank-csv.js`: bank CSV layout detection and parsing
+- `src/sounds.js`: sounds made with the Web Audio API
+- `src/sw.js`, `src/manifest.webmanifest`: installable app and offline use
+- `src/fonts/`, `src/brand/`, `src/vendor/qrcode.js`: fonts (SIL OFL), logo and icons, QR codes (MIT)
+- `server/secure-store.js`, `server/totp.js`, `server/cli.js`: encryption at rest, sign-in codes, admin commands
 - `src/app.js`: UI, saving to the server, backup and import
 - `src/styles.css`: styles
 - `scripts/install-proxmox.sh`: one-line Proxmox LXC installer
+- `scripts/install.sh`: installer for any Debian or Ubuntu machine
 - `test/`: logic and server tests
 - `design/`: design mockups (not served)
 

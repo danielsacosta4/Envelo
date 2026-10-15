@@ -35,6 +35,17 @@
   }
   applyDensity(readDensity());
 
+  // Font for numbers and titles: Poster (default), Classic or Modern. Per device.
+  const FONT_KEY = 'envelo.font';
+  function readFont() {
+    try { return localStorage.getItem(FONT_KEY) || 'poster'; } catch { return 'poster'; }
+  }
+  function applyFont(f) {
+    document.documentElement.dataset.font = f;
+    try { localStorage.setItem(FONT_KEY, f); } catch { /* applies until reload */ }
+  }
+  applyFont(readFont());
+
   let budget = B.create();
   let month = thisMonth();
   let account = null;
@@ -95,6 +106,7 @@
     try {
       const res = await api('PUT', '/api/budget', budget, { 'If-Match': String(revision) });
       revision = res.revision;
+      dropPending();
       const { savedAt } = res;
       setSync(`Saved ${new Date(savedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`);
     } catch (err) {
@@ -106,6 +118,7 @@
       if (err.status === 409) {
         // Another device saved first. Show its version rather than overwrite it.
         inFlight = false;
+        dropPending();
         budget = err.data.budget ? B.fromJSON(err.data.budget) : B.create();
         revision = err.data.revision;
         showError('Your budget was changed on another device, so this screen now shows the latest version. Your last change here was not saved; please make it again.');
@@ -114,7 +127,8 @@
         return;
       }
       dirty = true;
-      setSync(`Not saved: ${err.message} Retrying…`, true);
+      keepPending();
+      setSync(navigator.onLine === false ? 'Offline: changes are kept on this device and sent when you are back online.' : `Not saved: ${err.message} Retrying…`, true);
       saveTimer = setTimeout(flush, 5000);
     } finally {
       inFlight = false;
@@ -129,10 +143,19 @@
   }
 
   // Run a change, surface any validation error, then re-render and save.
-  function attempt(fn) {
+  // With `undoLabel`, the budget before the change is kept so the change can
+  // be undone from the toast or with Ctrl+Z.
+  const undoStack = [];
+  function attempt(fn, undoLabel = null) {
+    const snapshot = undoLabel ? JSON.stringify(budget) : null;
     try {
       fn();
       showError('');
+      if (snapshot) {
+        undoStack.push({ label: undoLabel, snapshot });
+        if (undoStack.length > 25) undoStack.shift();
+        toast(undoLabel, { action: 'Undo', onAction: undo });
+      }
       scheduleSave();
       render();
       return true;
@@ -143,10 +166,24 @@
     }
   }
 
+  function undo() {
+    const last = undoStack.pop();
+    if (!last) {
+      toast('Nothing to undo');
+      return;
+    }
+    budget = B.fromJSON(JSON.parse(last.snapshot));
+    showError('');
+    scheduleSave();
+    render();
+    Sounds.play('undo');
+    toast(`Undone: ${last.label}`);
+  }
+
   // Animations. Skipped entirely when the device asks for reduced motion.
   const reduceMotion = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  function toast(message) {
+  function toast(message, { action = null, onAction = null, ms = 5000 } = {}) {
     let el = $('#toast');
     if (!el) {
       el = document.createElement('div');
@@ -155,12 +192,18 @@
       el.setAttribute('role', 'status');
       document.body.appendChild(el);
     }
-    el.textContent = message;
+    el.innerHTML = `<span>${esc(message)}</span>${action ? `<button type="button">${esc(action)}</button>` : ''}`;
+    if (action) {
+      el.querySelector('button').addEventListener('click', () => {
+        el.classList.remove('show');
+        onAction();
+      });
+    }
     el.classList.remove('show');
     void el.offsetWidth; // restart the transition
     el.classList.add('show');
     clearTimeout(toast.timer);
-    toast.timer = setTimeout(() => el.classList.remove('show'), 3200);
+    toast.timer = setTimeout(() => el.classList.remove('show'), action ? ms + 2000 : 3200);
   }
 
   function celebrate(message) {
@@ -226,7 +269,15 @@
     const after = B.monthView(budget, month);
     const now = new Map(after.groups.flatMap((g) => g.envelopes).map((e) => [e.id, e]));
     const changed = envIds.filter((id) => before.has(id) && now.has(id) && now.get(id).assigned > before.get(id).assigned);
-    if (!changed.length || reduceMotion() || !document.body.animate) return;
+    if (!changed.length) return;
+    // A target that became fully funded gets a stamp sound; otherwise coins.
+    const funded = changed.some((id) => before.get(id).underfunded && !now.get(id).underfunded);
+    if (reduceMotion() || !document.body.animate) {
+      Sounds.play(funded ? 'stamp' : 'coin');
+      return;
+    }
+    changed.slice(0, 6).forEach((_, i) => setTimeout(() => Sounds.play('coin', 0), 950 + i * 90));
+    if (funded) setTimeout(() => Sounds.play('stamp'), 1150);
 
     const readyAmount = $('#ready .amount');
     const FLIGHT = 950;
@@ -244,14 +295,14 @@
     changed.slice(0, 8).forEach((id, k) => {
       const old = before.get(id);
       const env = now.get(id);
-      const row = document.querySelector(`tr[data-env-row="${id}"]`);
+      const row = document.querySelector(`[data-env-row="${id}"]`);
       const input = row && row.querySelector('input[data-env]');
       if (!row || !input || !input.offsetParent) return;
       const delay = k * 90;
       const landAt = delay + FLIGHT;
 
       // Numbers and the progress bar start from their old values.
-      const avail = row.querySelector('.avail');
+      const avail = row.querySelector('.chip');
       const bar = row.querySelector('.tbar > i');
       if (avail) avail.textContent = money(old.available);
       if (bar) {
@@ -322,7 +373,7 @@
           .finished.then(() => plus.remove(), () => plus.remove());
 
         // A target that is now fully funded gets a burst on its badge.
-        const done = row.querySelector('.fund-done');
+        const done = row.querySelector('.stamp.done');
         if (done && old.underfunded && !env.underfunded) {
           done.animate([
             { transform: 'scale(0)' }, { transform: 'scale(1.25)', offset: 0.6 }, { transform: 'scale(1)' },
@@ -353,104 +404,245 @@
     return e.assigned > 0 || (e.progress || 0) > 0 ? 'fund-partial' : 'fund-none';
   }
 
-  function envelopeRow(e, tone, isCollapsed, isHiddenRow = false) {
-    const availClass = e.available < 0 || e.underfunded ? 'neg' : e.available === 0 ? 'zero' : '';
-    const state = fundState(e);
-    const pct = Math.round((e.progress || 0) * 100);
-    // The goal line keeps the same text whether funded or not, and the fund
-    // cell always holds something the same size, so funding never moves rows.
-    const goal = e.target ? `<div class="goal ${e.underfunded ? 'short' : 'done'}">${esc(describeTarget(e))}</div>
-      <div class="tbar ${state}" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"
-        aria-label="${esc(e.name)} target ${pct}%"><i style="width:${pct}%"></i></div>` : '';
-    const fund = isHiddenRow
-      ? `<button type="button" class="fund" data-action="unhide-envelope" data-id="${e.id}">Unhide</button>`
-      : e.underfunded
-        ? `<button type="button" class="fund" data-action="fund" data-id="${e.id}" data-amount="${e.needed}">Assign ${esc(money(e.needed))}</button>`
-        : e.target
-          ? '<span class="fund fund-done">✓ Funded</span>'
-          : '';
-    return `<tr class="${tone}${isCollapsed ? ' is-collapsed' : ''}" data-env-row="${e.id}">
-      <td class="env-cell"><div class="env-name"><button type="button" class="env-link" data-action="edit-target" data-id="${e.id}" title="Edit envelope and target">${esc(e.name)}</button>${e.overspent ? '<span class="badge">Overspent</span>' : ''}${sharedEnvelopeIds().has(e.id) ? '<span class="badge shared" title="Shared with someone">Shared</span>' : ''}</div>${goal}</td>
-      <td class="num" data-label="Assigned"><input type="text" inputmode="decimal" class="${state}" aria-label="Assigned to ${esc(e.name)}"
-          value="${B.toInput(e.assigned)}" data-env="${e.id}"></td>
-      <td class="num" data-label="Spent">${esc(money(e.activity))}</td>
-      <td class="num" data-label="Available"><span class="avail ${availClass}">${esc(money(e.available))}</span></td>
-      <td class="num fund-cell">${fund}</td>
-    </tr>`;
+  // The leading emoji of a name becomes its sticker; otherwise its first letter.
+  const EMOJI_RE = /^(\p{Extended_Pictographic}(?:️|‍\p{Extended_Pictographic}|\p{Emoji_Modifier})*|[\u{1F1E6}-\u{1F1FF}]{2})\s*/u;
+  function splitEmoji(name) {
+    const m = String(name || '').match(EMOJI_RE);
+    return m ? { icon: m[1], text: name.slice(m[0].length) || name } : { icon: null, text: name };
+  }
+  function tile(name) {
+    const { icon, text } = splitEmoji(name);
+    return icon ? `<span class="tile" aria-hidden="true">${esc(icon)}</span>`
+      : `<span class="tile letter" aria-hidden="true">${esc((text || '?').trim().charAt(0).toUpperCase())}</span>`;
   }
 
-  function render() {
-    const view = B.monthView(budget, month);
-    const [y, m] = month.split('-').map(Number);
-    $('#month-label').textContent = new Date(y, m - 1, 1).toLocaleString(undefined, { month: 'long', year: 'numeric' });
-    $('#currency').value = budget.currency;
-    $('#theme').value = readTheme();
-    $('#density').value = readDensity();
-    $('#print-month').textContent = `${$('#month-label').textContent} · Ready to assign ${money(view.readyToAssign)}`;
-    $('#account').textContent = account ? account.email : '';
+  // Available as a chip: green with money, yellow while a target still needs
+  // money, red (and clickable, to cover it) when overspent, grey at zero.
+  function chip(e) {
+    if (e.available < 0) {
+      return `<button type="button" class="chip neg" data-action="cover" data-id="${e.id}" title="Cover this overspending">${esc(money(e.available))}</button>`;
+    }
+    const cls = e.available === 0 ? 'zero' : e.underfunded ? 'low' : 'ok';
+    return `<span class="chip ${cls}">${esc(money(e.available))}</span>`;
+  }
 
+  function envelopeRow(e, isHiddenRow = false) {
+    const state = fundState(e);
+    const pct = Math.round((e.progress || 0) * 100);
+    const shared = sharedEnvelopeIds().has(e.id);
+    const goal = e.target
+      ? `<div class="goal ${e.underfunded ? 'short' : ''}">${esc(describeTarget(e))}${e.underfunded ? ` · needs ${esc(money(e.needed))}` : ''}</div>
+        <div class="tbar ${state}" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"
+          aria-label="${esc(e.name)} target ${pct}%"><i style="width:${pct}%"></i></div>`
+      : '';
+    const fund = isHiddenRow
+      ? `<button type="button" class="btn sm" data-action="unhide-envelope" data-id="${e.id}">Unhide</button>`
+      : e.underfunded
+        ? `<button type="button" class="btn sm fund" data-action="fund" data-id="${e.id}" data-amount="${e.needed}">Assign ${esc(money(e.needed))}</button>`
+        : e.target ? '<span class="stamp done">Funded ✓</span>' : '';
+    const { text } = splitEmoji(e.name);
+    return `<div class="env" data-env-row="${e.id}">
+      <div class="env-cell">${tile(e.name)}<div class="env-text">
+        <div class="env-name"><button type="button" class="env-link" data-action="edit-target" data-id="${e.id}" title="Edit envelope and target">${esc(text)}</button>${e.overspent ? '<span class="stamp over">Overspent</span>' : ''}${shared ? '<span class="stamp shared" title="Shared with someone">Shared</span>' : ''}</div>
+        ${goal}</div></div>
+      <div class="c" data-label="Assigned"><input type="text" inputmode="decimal" class="amt ${state}" aria-label="Assigned to ${esc(e.name)}" value="${B.toInput(e.assigned)}" data-env="${e.id}"></div>
+      <div class="c spent" data-label="Spent">${esc(money(e.activity))}</div>
+      <div class="c" data-label="Available">${chip(e)}</div>
+      <div class="c fund-cell">${fund}</div>
+    </div>`;
+  }
+
+  function groupCard(g, visible, isCollapsed) {
+    const color = budget.groupColors[g.name] ?? 0;
+    const sum = (key) => visible.reduce((t, e) => t + e[key], 0);
+    const availSum = sum('available');
+    return `<section class="group gc-${color}${isCollapsed ? ' is-collapsed' : ''}">
+      <div class="gh">
+        <div class="gh-name">
+          <button type="button" class="color-dot" data-action="group-color" data-group="${esc(g.name)}" title="Change colour" aria-label="Change the colour of ${esc(g.name)}"></button>
+          <button type="button" class="group-toggle" data-action="toggle-group" data-group="${esc(g.name)}" aria-expanded="${!isCollapsed}">
+            <span class="chev">${isCollapsed ? '▸' : '▾'}</span>${esc(g.name)}</button>
+        </div>
+        <div class="tot">${esc(money(sum('assigned')))}</div>
+        <div class="tot">${esc(money(sum('activity')))}</div>
+        <div class="tot tot-avail ${availSum < 0 ? 'neg' : ''}">${esc(money(availSum))}</div>
+        <div class="g-act"><button type="button" class="icon-text" data-action="hide-group" data-group="${esc(g.name)}" title="Hide this group">Hide</button></div>
+      </div>
+      ${visible.map((e) => envelopeRow(e)).join('')}
+    </section>`;
+  }
+
+  function fmtMonthLong(m) {
+    const [y, mo] = m.split('-').map(Number);
+    return new Date(y, mo - 1, 1).toLocaleString(undefined, { month: 'long' });
+  }
+
+  // Ready to Assign. At exactly zero, with money assigned this month, the
+  // sticker turns green and gets a stamp; the first time each month it cheers.
+  function renderReady(view) {
     const ready = $('#ready');
+    const assignedThisMonth = Object.values(budget.assignments[month] || {}).some((v) => v !== 0);
+    const allAssigned = view.readyToAssign === 0 && assignedThisMonth && budget.envelopes.length > 0;
     ready.classList.toggle('warn', view.readyToAssign < 0);
-    ready.innerHTML = `<div class="label">Ready to assign</div>
+    ready.classList.toggle('zero-done', allAssigned);
+    const hasTargets = budget.envelopes.some((e) => e.target && !B.isHidden(budget, e));
+    ready.innerHTML = `${allAssigned ? `<div class="zero-stamp">Every ${esc(currencyWord())} has a job</div>` : ''}
+      <div class="label">${view.readyToAssign < 0 ? 'Assigned too much' : 'Ready to assign'}</div>
       <div class="amount">${esc(money(view.readyToAssign))}</div>
-      ${view.underfunded > 0 ? `<div class="under-line">Targets need ${esc(money(view.underfunded))} this month
-        <button type="button" data-action="fund-all">Fund all targets</button></div>`
-    : budget.envelopes.some((e) => e.target && !B.isHidden(budget, e)) ? '<div class="under-line">✓ All targets funded</div>' : ''}`;
+      ${view.underfunded > 0
+        ? `<div class="under-line">Targets need ${esc(money(view.underfunded))} <button type="button" class="btn sm yellow" data-action="fund-all">Fund all</button></div>`
+        : hasTargets ? '<div class="under-line">✓ All targets funded</div>' : '<div class="under-line"></div>'}`;
+    const key = `envelo.cheered.${account ? account.email : ''}`;
+    let cheered = '';
+    try { cheered = localStorage.getItem(key) || ''; } catch { /* ignore */ }
+    if (allAssigned && cheered !== month && month === thisMonth()) {
+      try { localStorage.setItem(key, month); } catch { /* ignore */ }
+      if (celebrateZeroArmed) {
+        const stamp = ready.querySelector('.zero-stamp');
+        if (stamp) stamp.classList.add('fresh');
+        ready.classList.remove('cheer');
+        void ready.offsetWidth;
+        ready.classList.add('cheer');
+        setTimeout(() => {
+          celebrate(`🎉 Every ${currencyWord()} has a job`);
+          Sounds.play('fanfare');
+        }, 350);
+      }
+    }
+  }
+  // Only cheer for a change made on this screen, not on first load.
+  let celebrateZeroArmed = false;
 
-    const rows = [];
+  // "euro", "dollar", "pound"... for the stamp, from the budget's currency.
+  function currencyWord() {
+    const names = { EUR: 'euro', USD: 'dollar', CAD: 'dollar', AUD: 'dollar', MXN: 'peso', GBP: 'pound', BRL: 'real', CHF: 'franc', JPY: 'yen', SEK: 'krona', NOK: 'krone', DKK: 'krone', PLN: 'złoty', CZK: 'koruna' };
+    return names[budget.currency] || 'coin';
+  }
+
+  function renderStats(view) {
+    const envs = view.groups.flatMap((g) => g.envelopes);
+    const sum = (k) => envs.reduce((t, e) => t + e[k], 0);
+    const assigned = sum('assigned');
+    const spent = -sum('activity') || 0;
+    let paceHtml = '';
+    const [y, m] = month.split('-').map(Number);
+    const days = new Date(y, m, 0).getDate();
+    const today = todayISO();
+    if (month === thisMonth()) {
+      const day = Number(today.slice(8, 10));
+      const usedPct = assigned > 0 ? Math.round((spent / assigned) * 100) : 0;
+      paceHtml = `<div class="pace"><span>Day ${day} of ${days}</span>
+        <div class="pbar" title="Spent ${usedPct}% of what is assigned"><i style="width:${Math.min(100, Math.max(0, usedPct))}%"></i><b style="left:${Math.round((day / days) * 100)}%"></b></div>
+        <small>spent ${usedPct}% of assigned · the line is today</small></div>`;
+    } else {
+      const over = envs.filter((e) => e.available < 0).reduce((t, e) => t - e.available, 0);
+      paceHtml = `<div><span>Overspent</span><b class="${over ? 'neg' : ''}">${esc(money(over))}</b></div>`;
+    }
+    $('#stats').innerHTML = `<div><span>Assigned</span><b>${esc(money(assigned))}</b></div>
+      <div><span>Spent</span><b>${esc(money(spent))}</b></div>
+      <div><span>Available</span><b class="${sum('available') < 0 ? 'neg' : ''}">${esc(money(sum('available')))}</b></div>
+      ${paceHtml}`;
+  }
+
+  function renderBudget(view) {
+    if (B.ensureGroupColors(budget)) scheduleSave();
     const collapsed = readCollapsed();
+    const parts = [];
     const hiddenRows = [];
-    let gi = 0;
     for (const g of view.groups) {
       const groupHidden = (budget.hiddenGroups || []).includes(g.name);
       const visible = g.envelopes.filter((e) => !e.hidden);
       for (const e of g.envelopes) if (e.hidden) hiddenRows.push(e);
       if (groupHidden || !visible.length) continue;
-      const tone = `tone-${gi++ % 3}`;
-      const isCollapsed = collapsed.includes(g.name);
-      const sum = (key) => visible.reduce((t, e) => t + e[key], 0);
-      const availSum = sum('available');
-      rows.push(`<tr class="group ${tone}">
-        <td class="group-name"><button type="button" class="group-toggle" data-action="toggle-group" data-group="${esc(g.name)}"
-            aria-expanded="${!isCollapsed}"><span class="chev">${isCollapsed ? '▸' : '▾'}</span>${esc(g.name)}</button></td>
-        <td class="num g-sum">${esc(money(sum('assigned')))}</td>
-        <td class="num g-sum">${esc(money(sum('activity')))}</td>
-        <td class="num g-sum ${availSum < 0 ? 'neg' : ''}">${esc(money(availSum))}</td>
-        <td class="num g-act"><button type="button" class="icon-text" data-action="hide-group" data-group="${esc(g.name)}" title="Hide this group">Hide</button></td>
-      </tr>`);
-      for (const e of visible) rows.push(envelopeRow(e, tone, isCollapsed));
+      parts.push(groupCard(g, visible, collapsed.includes(g.name)));
     }
     const hiddenGroups = (budget.hiddenGroups || []).filter((name) => budget.envelopes.some((e) => e.group === name));
     if (hiddenRows.length) {
-      const showing = showHidden;
-      rows.push(`<tr class="group hidden-head">
-        <td colspan="5"><button type="button" class="group-toggle" data-action="toggle-hidden" aria-expanded="${showing}">
-          <span class="chev">${showing ? '▾' : '▸'}</span>Hidden (${hiddenRows.length})</button>
-          ${showing ? hiddenGroups.map((name) => `<button type="button" class="icon-text" data-action="show-group" data-group="${esc(name)}">Show group "${esc(name)}"</button>`).join(' ') : ''}
-        </td></tr>`);
-      if (showing) for (const e of hiddenRows) rows.push(envelopeRow(e, 'tone-hidden', false, true));
+      parts.push(`<section class="group hidden-group">
+        <div class="gh"><div class="gh-name"><button type="button" class="group-toggle" data-action="toggle-hidden" aria-expanded="${showHidden}">
+          <span class="chev">${showHidden ? '▾' : '▸'}</span>Hidden (${hiddenRows.length})</button></div>
+          <div></div><div></div><div></div><div></div></div>
+        ${showHidden ? `${hiddenGroups.length ? `<div class="env"><div class="row">${hiddenGroups.map((name) => `<button type="button" class="btn sm" data-action="show-group" data-group="${esc(name)}">Show group "${esc(name)}"</button>`).join(' ')}</div></div>` : ''}
+          ${hiddenRows.map((e) => envelopeRow(e, true)).join('')}` : ''}
+      </section>`);
     }
-    $('#envelope-rows').innerHTML = rows.join('');
+    $('#envelope-rows').innerHTML = parts.join('');
     $('#empty').hidden = budget.envelopes.length > 0;
+    renderSideCards();
+    renderRecapBanner();
+  }
 
+  // Latest transactions, the closest goal and the biggest loan, at a glance.
+  function renderSideCards() {
+    renderTransactions();
+    const goals = (budget.goals || []).map((g) => [g, B.goalStatus(budget, g, month, 2)]).filter(([, st]) => st.remaining > 0)
+      .sort((x, y) => y[1].progress - x[1].progress);
+    $('#side-goal').innerHTML = goals.length ? (() => {
+      const [g, st] = goals[0];
+      const pct = Math.round(st.progress * 100);
+      return `<section class="card side-card side-goal"><h2>Goal · ${esc(g.name)}</h2>
+        <div class="side-big">${pct}<small>%</small></div>
+        <div class="bigbar"><i style="width:${pct}%"></i><b style="left:25%"></b><b style="left:50%"></b><b style="left:75%"></b></div>
+        <p>${esc(money(st.value))} of ${esc(money(g.amount))}${st.eta ? ` · around ${esc(fmtMonth(st.eta))}` : ''}</p>
+        <button type="button" class="link" data-view="goals">All goals →</button></section>`;
+    })() : '';
+    const loans = budget.accounts.filter((a) => a.loan);
+    $('#side-loan').innerHTML = loans.length ? (() => {
+      const a = loans[0];
+      const st = L.loanStatus(a.loan, loanTransactions(a.id), { today: todayISO() });
+      return `<section class="card side-card side-loan"><h2>Loan · ${esc(a.name)}</h2>
+        <div class="side-big">${esc(money(st.owed))}</div>
+        <p>${st.paidOff ? 'Paid off 🎉' : st.plan.neverPaysOff ? 'The payment does not cover the interest' : `Debt free ${esc(fmtMonth(st.plan.payoffMonth))}`}${st.progress != null ? ` · ${Math.round(st.progress * 100)}% repaid` : ''}</p>
+        <button type="button" class="link" data-view="loans">Loans →</button></section>`;
+    })() : '';
+    const sk = B.streaks(budget, B.shiftMonth(thisMonth(), -1));
+    const best = [
+      [sk.allAssigned, `month${sk.allAssigned === 1 ? '' : 's'} with every ${currencyWord()} assigned`],
+      [sk.noOverspending, `month${sk.noOverspending === 1 ? '' : 's'} without overspending`],
+      [sk.saving, `month${sk.saving === 1 ? '' : 's'} spending less than you earn`],
+    ].filter(([n]) => n >= 2).sort((x, y) => y[0] - x[0]);
+    $('#side-streak').innerHTML = best.length ? `<section class="card side-card side-streak"><h2>Streak 🔥</h2>
+      <div class="streak-n">${best[0][0]}</div><p>${esc(best[0][1])} in a row</p>
+      ${best.slice(1).map(([n, t]) => `<p class="hint">${n} ${esc(t)}</p>`).join('')}</section>` : '';
+  }
+
+  function render() {
+    const view = B.monthView(budget, month);
+    const [y] = month.split('-');
+    $('#month-label').innerHTML = `${esc(fmtMonthLong(month))} <span class="yr">${esc(y)}</span>`;
+    $('#currency').value = budget.currency;
+    $('#print-month').textContent = `${fmtMonthLong(month)} ${y} · Ready to assign ${money(view.readyToAssign)}`;
+    $('#account').textContent = account ? account.email : '';
+
+    if (currentView === 'account' && !budget.accounts.some((a) => a.id === openAccountId)) currentView = 'accounts';
+    if (currentView === 'shared' && !shares.incoming.length) currentView = 'budget';
+    const VIEWS = ['budget', 'accounts', 'account', 'reports', 'recap', 'loans', 'goals', 'shared', 'search', 'settings'];
+    for (const v of VIEWS) $(`#view-${v}`).hidden = v !== currentView;
+    const tab = currentView === 'account' ? 'accounts' : currentView === 'recap' ? 'reports' : currentView;
+    document.querySelectorAll('.views [data-view], .bottom-nav [data-view], .top-tools [data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === tab));
+    // The month header and totals belong to the budget; other pages keep the month switcher.
+    $('#ready').hidden = currentView !== 'budget';
+    $('#stats').hidden = currentView !== 'budget';
+    $('#hero').hidden = ['settings', 'search', 'shared', 'accounts', 'loans', 'recap'].includes(currentView);
+    $('.fab').hidden = !['budget', 'accounts', 'account', 'search'].includes(currentView);
+    $('.bottom-nav').hidden = false;
+
+    renderReady(view);
+    renderStats(view);
+    renderBudget(view);
     renderEnvelopeOptions();
     syncKind();
-    renderTransactions();
     renderAccounts();
     renderRecurring();
-    if (currentView === 'account' && !budget.accounts.some((a) => a.id === openAccountId)) currentView = 'accounts';
-    for (const v of ['budget', 'accounts', 'account', 'reports', 'loans', 'goals', 'shared']) $(`#view-${v}`).hidden = v !== currentView;
-    const tab = currentView === 'account' ? 'accounts' : currentView;
-    document.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === tab));
-    // The transaction form lives on the budget page and on an account page.
-    const formHome = currentView === 'account' ? $('#account-side') : $('#budget-side');
-    if ($('#tx-panel').parentElement !== formHome) formHome.prepend($('#tx-panel'));
+    renderShareList();
+    renderSettings();
     if (currentView === 'account') renderAccountPage();
     if (currentView === 'reports') renderReport();
     if (currentView === 'loans') renderLoans();
     if (currentView === 'goals') renderGoals();
     if (currentView === 'shared') renderShared();
-    renderShareList();
+    if (currentView === 'search') renderSearch();
+    if (currentView === 'recap') renderRecap();
   }
 
   const accountName = (id) => (budget.accounts.find((a) => a.id === id) || {}).name || 'Unknown account';
@@ -468,12 +660,12 @@
       const bal = B.accountBalance(budget, a.id);
       const rec = a.reconciledAt ? `Reconciled ${esc(a.reconciledAt)} at ${esc(money(a.reconciledBalance))}` : 'Never reconciled';
       return `<div class="account-row">
-        <div><div class="env-name"><button type="button" class="env-link" data-action="open-account" data-id="${a.id}">${esc(a.name)}</button>${a.offBudget ? '<span class="badge off">Off budget</span>' : ''}</div><div class="goal">${rec}</div></div>
+        <div><div class="env-name"><button type="button" class="env-link" data-action="open-account" data-id="${a.id}">${esc(a.name)}</button>${a.offBudget ? '<span class="stamp off">Off budget</span>' : ''}${a.loan ? '<span class="stamp shared">Loan</span>' : ''}</div><div class="goal">${rec}</div></div>
         <div class="acct-bal ${bal < 0 ? 'neg' : ''}">${esc(money(bal))}</div>
         <div class="row acct-actions">
-          <button type="button" data-action="reconcile" data-id="${a.id}">Reconcile</button>
-          <button type="button" data-action="rename-account" data-id="${a.id}">Rename</button>
-          <button type="button" class="danger" data-action="delete-account" data-id="${a.id}">Delete</button>
+          <button type="button" class="btn sm" data-action="reconcile" data-id="${a.id}">Reconcile</button>
+          <button type="button" class="btn sm" data-action="rename-account" data-id="${a.id}">Rename</button>
+          <button type="button" class="btn sm danger" data-action="delete-account" data-id="${a.id}">Delete</button>
         </div>
       </div>`;
     }).join('') : '<p class="empty">No accounts yet. Add the bank accounts and cash you budget with.</p>';
@@ -490,7 +682,7 @@
   function renderAccountPage() {
     const acct = budget.accounts.find((a) => a.id === openAccountId);
     const bal = B.accountBalance(budget, acct.id);
-    $('#acct-title').innerHTML = `${esc(acct.name)}${acct.offBudget ? '<span class="badge off">Off budget</span>' : ''}`;
+    $('#acct-title').innerHTML = `${esc(acct.name)}${acct.offBudget ? '<span class="stamp off">Off budget</span>' : ''}`;
     $('#acct-balance').textContent = money(bal);
     $('#acct-balance').classList.toggle('neg', bal < 0);
     // Imported budgets have reconciled transactions but no reconcile date yet.
@@ -523,7 +715,7 @@
         : B.countsAsIncome(budget, t) ? 'Ready to Assign' : '—';
       return `<tr>
         <td class="nowrap">${esc(t.date)}</td>
-        <td><button type="button" class="env-link" data-action="edit-tx" data-id="${t.id}">${esc(t.payee || (t.amount > 0 ? 'Income' : 'Spending'))}</button>
+        <td><button type="button" class="env-link" data-action="edit-tx" data-id="${t.id}">${esc(t.payee || (t.amount > 0 ? 'Income' : 'Spending'))}</button>${t.splitId ? '<span class="split-mark">split</span>' : ''}${receiptBtn(t)}
           ${t.note ? `<div class="goal">${esc(t.note)}</div>` : ''}</td>
         <td>${esc(where)}</td>
         <td class="num ${t.amount > 0 ? 'in' : ''}">${t.amount > 0 ? '+' : ''}${esc(money(t.amount))}</td>
@@ -697,42 +889,262 @@
 
     const groups = [...new Set(budget.envelopes.map((e) => e.group))];
     $('#group-list').innerHTML = groups.map((g) => `<option value="${esc(g)}">`).join('');
+    $('#payee-list').innerHTML = B.payees(budget).slice(0, 300).map((p) => `<option value="${esc(p)}">`).join('');
   }
 
+  // Rows for transaction lists: split lines show as one purchase.
+  function groupSplits(txs) {
+    const seen = new Set();
+    const out = [];
+    for (const t of txs) {
+      if (t.splitId) {
+        if (seen.has(t.splitId)) continue;
+        seen.add(t.splitId);
+        const legs = txs.filter((x) => x.splitId === t.splitId);
+        out.push({ ...t, amount: legs.reduce((sum, l) => sum + l.amount, 0), legs, receiptId: legs.map((l) => l.receiptId).find(Boolean) });
+      } else out.push(t);
+    }
+    return out;
+  }
+  const whereText = (t, names) => (t.legs ? `Split · ${t.legs.length} envelopes`
+    : t.envelopeId ? names[t.envelopeId] || 'Deleted envelope'
+    : t.transferId ? 'Transfer'
+    : B.isOnBudget(budget, t.accountId) ? 'Ready to Assign' : 'Off budget');
+  const receiptBtn = (t) => (t.receiptId ? `<button type="button" class="receipt-btn" data-action="view-receipt" data-id="${esc(t.receiptId)}" data-tx="${t.id}" title="See the receipt" aria-label="See the receipt">📎</button>` : '');
+
   function renderTransactions() {
-    const txs = budget.transactions
+    const all = budget.transactions
       .filter((t) => t.date.slice(0, 7) === month)
       .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    const txs = groupSplits(all);
     const names = Object.fromEntries(budget.envelopes.map((e) => [e.id, e.name]));
     $('#tx-count').textContent = txs.length ? `${txs.length} this month` : '';
-    $('#tx-list').innerHTML = txs.length ? txs.map((t) => {
-      const where = t.envelopeId ? names[t.envelopeId] || 'Deleted envelope'
-        : t.transferId ? 'Transfer'
-        : B.isOnBudget(budget, t.accountId) ? 'Income' : 'Off budget';
-      const label = t.payee || (t.envelopeId ? 'Spending' : 'Income');
-      const acct = budget.accounts.length > 1 ? ` · ${esc(accountName(t.accountId))}` : '';
+    $('#tx-list').innerHTML = txs.length ? txs.slice(0, 6).map((t) => {
+      const label = t.payee || (t.envelopeId || t.legs ? 'Spending' : 'Income');
+      const by = t.createdBy && account && t.createdBy !== account.email ? ` · by ${esc(t.createdBy)}` : '';
       return `<li>
-        <div class="tx-meta">${esc(t.date)} · ${esc(where)}${acct}${t.createdBy && account && t.createdBy !== account.email ? ` · by ${esc(t.createdBy)}` : ''}${t.note ? ' · ' + esc(t.note) : ''}${t.reconciled ? ' · ✓' : ''}</div>
-        <div><button type="button" class="env-link" data-action="edit-tx" data-id="${t.id}">${esc(label)}</button></div>
+        <div class="tx-main"><button type="button" class="env-link" data-action="edit-tx" data-id="${t.id}">${esc(label)}</button>${receiptBtn(t)}
+          <div class="tx-meta">${esc(t.date.slice(8))} · ${esc(whereText(t, names))}${by}</div></div>
         <div class="tx-amt ${t.amount > 0 ? 'in' : ''}">${t.amount > 0 ? '+' : ''}${esc(money(t.amount))}</div>
-        <button type="button" class="icon tx-del" data-action="delete-tx" data-id="${t.id}" aria-label="Delete transaction">&times;</button>
       </li>`;
-    }).join('') : '<li class="tx-meta">No transactions this month.</li>';
+    }).join('') : '<li class="tx-empty tx-meta">No transactions this month yet.</li>';
+  }
+
+  // Search across every transaction.
+  function renderSearch() {
+    const acctSel = $('#search-account');
+    const envSel = $('#search-envelope');
+    const keepA = acctSel.value;
+    const keepE = envSel.value;
+    acctSel.innerHTML = `<option value="">All</option>${budget.accounts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}`;
+    envSel.innerHTML = `<option value="">All</option>${budget.envelopes.map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}`;
+    acctSel.value = budget.accounts.some((a) => a.id === keepA) ? keepA : '';
+    envSel.value = budget.envelopes.some((e) => e.id === keepE) ? keepE : '';
+    const found = B.searchTransactions(budget, {
+      q: $('#search-q').value, accountId: acctSel.value, envelopeId: envSel.value,
+      from: $('#search-from').value, to: $('#search-to').value,
+    });
+    const names = Object.fromEntries(budget.envelopes.map((e) => [e.id, e.name]));
+    const total = found.reduce((sum, t) => sum + t.amount, 0);
+    $('#search-count').textContent = `${found.length} transaction${found.length === 1 ? '' : 's'} · total ${money(total)}`;
+    const shown = found.slice(0, 400);
+    $('#search-rows').innerHTML = shown.length ? shown.map((t) => `<tr>
+      <td class="nowrap">${esc(t.date)}</td>
+      <td><button type="button" class="env-link" data-action="edit-tx" data-id="${t.id}">${esc(t.payee || (t.amount > 0 ? 'Income' : 'Spending'))}</button>${t.splitId ? '<span class="split-mark">split</span>' : ''}${receiptBtn(t)}
+        ${t.note ? `<div class="goal">${esc(t.note)}</div>` : ''}</td>
+      <td>${esc(t.envelopeId ? names[t.envelopeId] || 'Deleted envelope' : t.transferId ? 'Transfer' : '—')}</td>
+      <td>${esc(accountName(t.accountId))}</td>
+      <td class="num ${t.amount > 0 ? 'in' : ''}">${t.amount > 0 ? '+' : ''}${esc(money(t.amount))}</td>
+      <td class="num"><button type="button" class="icon" data-action="delete-tx" data-id="${t.id}" aria-label="Delete transaction">&times;</button></td>
+    </tr>`).join('') + (found.length > shown.length ? `<tr><td colspan="6" class="empty">Showing the newest ${shown.length}. Narrow the search to see the rest.</td></tr>` : '')
+      : '<tr><td colspan="6" class="empty">Nothing matches.</td></tr>';
+  }
+
+  // Settings page
+  function renderSettings() {
+    $('#theme').value = readTheme();
+    $('#density').value = readDensity();
+    $('#font').value = readFont();
+    $('#font-preview').textContent = money(123456);
+    $('#sound-on').checked = Sounds.on;
+    $('#sound-volume').value = Math.round(Sounds.volume * 100);
+    $('#volume-field').hidden = !Sounds.on;
+    const on = !!(account && account.twofa);
+    $('#twofa-status').textContent = on
+      ? `On. Signing in needs a code from your authenticator app. ${account.recoveryLeft} recovery code${account.recoveryLeft === 1 ? '' : 's'} left.`
+      : 'Off. Turn it on so a stolen password is not enough to get in.';
+    $('#twofa-btn').textContent = on ? 'Manage two-step sign-in' : 'Turn on two-step sign-in';
+  }
+
+  $('#password-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    const msg = $('#password-msg');
+    msg.classList.remove('ok');
+    msg.hidden = true;
+    if (f.next.value !== f.repeat.value) {
+      msg.textContent = 'The two new passwords are not the same.';
+      msg.hidden = false;
+      return;
+    }
+    try {
+      await api('POST', '/api/password', { current: f.current.value, next: f.next.value });
+      f.reset();
+      msg.textContent = 'Password changed. Your other devices were signed out.';
+      msg.classList.add('ok');
+      msg.hidden = false;
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.hidden = false;
+    }
+  });
+
+  // A small dialog that asks for the password before something sensitive.
+  function askPassword(title, text, action, danger = false) {
+    return new Promise((resolve) => {
+      const d = $('#twofa-dialog');
+      $('#twofa-body').innerHTML = `<h2>${esc(title)}</h2><p>${esc(text)}</p>
+        <form class="stack" id="ask-pass-form"><label>Your password <input type="password" name="password" required autocomplete="current-password"></label>
+        <div class="row"><button type="submit" class="btn ${danger ? 'danger' : 'primary'}">${esc(action)}</button>
+        <button type="button" class="btn" data-action="close-dialog">Cancel</button></div></form>`;
+      let done = false;
+      $('#ask-pass-form').addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        done = true;
+        resolve(ev.target.password.value);
+      });
+      d.addEventListener('close', () => { if (!done) resolve(null); }, { once: true });
+      d.showModal();
+      setTimeout(() => d.querySelector('input').focus(), 30);
+    });
+  }
+
+  async function deleteMyAccount() {
+    const pass = await askPassword('Delete your account', 'This deletes your account, your budget, your receipts and anything you share. It cannot be undone. Export a backup first if you want to keep a copy.', 'Delete my account', true);
+    if (!pass) return;
+    try {
+      await api('POST', '/api/account/delete', { password: pass });
+      $('#twofa-dialog').close();
+      dropPending();
+      showAuth('Your account was deleted.');
+    } catch (err) {
+      $('#twofa-dialog').close();
+      showError(err.message);
+    }
+  }
+
+  function downloadText(name, text) {
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+    const a = Object.assign(document.createElement('a'), { href: url, download: name });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function showRecoveryCodes(codes) {
+    const body = $('#twofa-body');
+    body.innerHTML = `<h2>Recovery codes</h2>
+      <p>Keep these somewhere safe, like a password manager. Each one signs you in once if you lose your phone.</p>
+      <div class="codes">${codes.map((c) => `<span>${esc(c)}</span>`).join('')}</div>
+      <div class="row"><button type="button" class="btn" id="codes-dl">Download</button>
+      <button type="button" class="btn primary" data-action="close-dialog">I saved them</button></div>`;
+    $('#codes-dl').addEventListener('click', () => downloadText('envelo-recovery-codes.txt', `Envelo recovery codes for ${account.email}\n\n${codes.join('\n')}\n`));
+  }
+
+  async function twofaFlow() {
+    const d = $('#twofa-dialog');
+    const body = $('#twofa-body');
+    if (account.twofa) {
+      body.innerHTML = `<h2>Two-step sign-in</h2><p>It is on. ${account.recoveryLeft} recovery code${account.recoveryLeft === 1 ? '' : 's'} left.</p>
+        <div class="row"><button type="button" class="btn" id="tf-new">New recovery codes</button>
+        <button type="button" class="btn danger" id="tf-off">Turn off</button>
+        <button type="button" class="btn" data-action="close-dialog">Close</button></div>`;
+      d.showModal();
+      $('#tf-new').addEventListener('click', async () => {
+        d.close();
+        const pass = await askPassword('New recovery codes', 'Your old recovery codes stop working.', 'Make new codes');
+        if (!pass) return;
+        try {
+          const res = await api('POST', '/api/2fa/recovery', { password: pass });
+          account = res.user;
+          showRecoveryCodes(res.recoveryCodes);
+          renderSettings();
+        } catch (err) { d.close(); showError(err.message); }
+      });
+      $('#tf-off').addEventListener('click', async () => {
+        d.close();
+        const pass = await askPassword('Turn off two-step sign-in', 'Signing in will only need your password.', 'Turn off', true);
+        if (!pass) return;
+        try {
+          const res = await api('POST', '/api/2fa/disable', { password: pass });
+          account = res.user;
+          d.close();
+          renderSettings();
+          toast('Two-step sign-in is off');
+        } catch (err) { d.close(); showError(err.message); }
+      });
+      return;
+    }
+    let setup;
+    try {
+      setup = await api('POST', '/api/2fa/setup');
+    } catch (err) {
+      showError(err.message);
+      return;
+    }
+    let qr = '';
+    try {
+      const q = qrcode(0, 'M');
+      q.addData(setup.uri);
+      q.make();
+      qr = q.createSvgTag({ cellSize: 5, margin: 2, scalable: false });
+    } catch { qr = ''; }
+    body.innerHTML = `<h2>Two-step sign-in</h2>
+      <p>1. Scan this with an authenticator app (Google Authenticator, Aegis, 1Password, Bitwarden…).</p>
+      ${qr ? `<div class="qr">${qr}</div>` : ''}
+      <p class="hint">Or type this key into the app:</p><div class="secret">${esc(setup.secret.replace(/(.{4})/g, '$1 ').trim())}</div>
+      <form class="stack" id="tf-form"><label>2. Enter the 6-digit code it shows
+        <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required></label>
+        <p class="auth-message" id="tf-err" hidden></p>
+        <div class="row"><button type="submit" class="btn primary">Turn on</button><button type="button" class="btn" data-action="close-dialog">Cancel</button></div></form>`;
+    d.showModal();
+    $('#tf-form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      try {
+        const res = await api('POST', '/api/2fa/enable', { code: ev.target.code.value });
+        account = res.user;
+        renderSettings();
+        Sounds.play('stamp');
+        showRecoveryCodes(res.recoveryCodes);
+      } catch (err) {
+        $('#tf-err').textContent = err.message;
+        $('#tf-err').hidden = false;
+      }
+    });
   }
 
   // Auth
 
+  let authMode = 'login';
   function showAuth(message = '') {
     account = null;
     stopLive();
     shares = { outgoing: [], incoming: [] };
-    $('#nav-shared').hidden = true;
+    document.querySelectorAll('.nav-shared').forEach((el) => { el.hidden = true; });
     budget = B.create();
     $('#app').hidden = true;
+    $('.fab').hidden = true;
+    $('.bottom-nav').hidden = true;
     $('#auth').hidden = false;
     $('#auth-message').textContent = message;
     $('#auth-message').hidden = !message;
     $('#auth-password').value = '';
+    // Always come back to "Sign in", whatever tab was used before.
+    authMode = 'login';
+    document.querySelectorAll('[data-auth-mode]').forEach((b) => b.classList.toggle('active', b.dataset.authMode === 'login'));
+    $('#auth-hint').textContent = '';
+    authStep('password');
   }
 
   function showApp() {
@@ -741,14 +1153,31 @@
     render();
     startLive();
     loadShares();
+    celebrateZeroArmed = true;
+    // A brand-new budget gets the setup guide.
+    if (!budget.envelopes.length && !budget.accounts.length && !budget.transactions.length) openWelcome();
+    // The home-screen shortcut "Add a transaction" opens the form.
+    if (new URLSearchParams(location.search).get('add') === '1') openTx();
   }
 
-  let authMode = 'login';
+  // Steps of signing in: the password, then (if needed) a code or a new password.
+  function authStep(step) {
+    $('#auth-fields').hidden = step !== 'password';
+    $('#auth-code-field').hidden = step !== 'code';
+    $('#auth-newpass-field').hidden = step !== 'newpass';
+    $('#auth-code').required = step === 'code';
+    $('#auth-newpass').required = step === 'newpass';
+    document.querySelector('.auth-tabs').hidden = step !== 'password';
+    $('#auth-submit').textContent = step === 'code' ? 'Check code' : step === 'newpass' ? 'Save and sign in'
+      : authMode === 'login' ? 'Sign in' : 'Create account';
+    if (step === 'code') setTimeout(() => $('#auth-code').focus(), 0);
+    if (step === 'newpass') setTimeout(() => $('#auth-newpass').focus(), 0);
+  }
   document.querySelectorAll('[data-auth-mode]').forEach((btn) => {
     btn.addEventListener('click', () => {
       authMode = btn.dataset.authMode;
       document.querySelectorAll('[data-auth-mode]').forEach((b) => b.classList.toggle('active', b === btn));
-      $('#auth-submit').textContent = authMode === 'login' ? 'Sign in' : 'Create account';
+      authStep('password');
       $('#auth-hint').textContent = authMode === 'login'
         ? ''
         : 'Passwords must be at least 8 characters. Your budget is stored on this server, so you can use it from any device.';
@@ -764,23 +1193,50 @@
     btn.disabled = true;
     try {
       const path = authMode === 'login' ? '/api/login' : '/api/register';
-      const { user } = await api('POST', path, { email: f.email.value, password: f.password.value });
+      const body = { email: f.email.value, password: f.password.value };
+      if (!$('#auth-code-field').hidden) body.code = f.code.value;
+      if (!$('#auth-newpass-field').hidden) body.newPassword = f.newPassword.value;
+      const { user } = await api('POST', path, body);
       account = user;
+      f.code.value = '';
+      f.newPassword.value = '';
       await loadBudget();
       showApp();
     } catch (err) {
+      if (err.data && err.data.needCode) authStep('code');
+      if (err.data && err.data.needNewPassword) authStep('newpass');
+      const quiet = err.data && ((err.data.needCode && $('#auth-code').value === '') || (err.data.needNewPassword && !f.newPassword.value));
       $('#auth-message').textContent = err.message;
-      $('#auth-message').hidden = false;
+      $('#auth-message').hidden = !!quiet;
     } finally {
       btn.disabled = false;
     }
   });
+
+  // Unsaved changes are also kept on this device, so closing the app while
+  // offline loses nothing: they are sent the next time it opens.
+  const pendingKey = () => `envelo.pending.${account ? account.email : ''}`;
+  function keepPending() {
+    try { localStorage.setItem(pendingKey(), JSON.stringify({ revision, budget })); } catch { /* full or blocked */ }
+  }
+  function dropPending() {
+    try { localStorage.removeItem(pendingKey()); } catch { /* ignore */ }
+  }
 
   async function loadBudget() {
     const res = await api('GET', '/api/budget');
     budget = res.budget ? B.fromJSON(res.budget) : B.create();
     revision = res.revision || 0;
     setSync('');
+    undoStack.length = 0;
+    try {
+      const pending = JSON.parse(localStorage.getItem(pendingKey()) || 'null');
+      if (pending && pending.revision === revision && pending.budget) {
+        budget = B.fromJSON(pending.budget);
+        scheduleSave();
+        setSync('Sending changes made offline…');
+      } else if (pending) dropPending();
+    } catch { /* ignore a damaged copy */ }
     // Create any recurring transactions that came due since the last visit.
     if (B.applyRecurring(budget, todayISO()) > 0) scheduleSave();
   }
@@ -792,12 +1248,32 @@
     } catch {
       // Ignore: the local session is cleared either way.
     }
+    dropPending();
     showAuth();
   }
 
   // Events
 
+  function closeDialogs() {
+    document.querySelectorAll('dialog[open]').forEach((d) => d.close());
+  }
+
+  function goTo(view) {
+    currentView = view;
+    closeDialogs();
+    render();
+    window.scrollTo(0, 0);
+    if (view === 'search') setTimeout(() => $('#search-q').focus(), 0);
+  }
+
+  const envName = (id) => (budget.envelopes.find((e) => e.id === id) || {}).name || 'envelope';
+
   document.addEventListener('click', (ev) => {
+    const viewBtn = ev.target.closest('[data-view]');
+    if (viewBtn && !viewBtn.closest('[data-action]')) {
+      goTo(viewBtn.dataset.view);
+      return;
+    }
     const btn = ev.target.closest('[data-action]');
     if (!btn) return;
     switch (btn.dataset.action) {
@@ -807,34 +1283,57 @@
       case 'fund': {
         const cur = B.assignedIn(budget, month, btn.dataset.id);
         const prev = B.monthView(budget, month);
-        if (attempt(() => B.setAssigned(budget, month, btn.dataset.id, cur + Number(btn.dataset.amount)))) {
+        const amount = Number(btn.dataset.amount);
+        if (attempt(() => B.setAssigned(budget, month, btn.dataset.id, cur + amount), `Assigned ${money(amount)} to ${envName(btn.dataset.id)}`)) {
           fundFx(prev, [btn.dataset.id]);
         }
         break;
       }
-      case 'delete-tx':
-        if (confirm('Delete this transaction?')) attempt(() => B.removeTransaction(budget, btn.dataset.id));
+      case 'delete-tx': {
+        const t = budget.transactions.find((x) => x.id === btn.dataset.id);
+        if (!t) break;
+        if (attempt(() => B.removeTransaction(budget, t.id), `Deleted ${t.payee || 'transaction'} ${money(t.amount)}`)) Sounds.play('crumple');
         break;
+      }
       case 'fund-all': {
         let total = 0;
         const prev = B.monthView(budget, month);
+        const snapshot = JSON.stringify(budget);
         const ok = attempt(() => { total = B.fundAllTargets(budget, month); });
         if (ok && total === 0) showError('There is no money in Ready to Assign to fund targets.');
         if (ok && total > 0) {
+          undoStack.push({ label: `Assigned ${money(total)} to your targets`, snapshot });
           fundFx(prev, budget.envelopes.map((e) => e.id));
-          toast(`Assigned ${money(total)} to your targets`);
+          toast(`Assigned ${money(total)} to your targets`, { action: 'Undo', onAction: undo });
         }
         break;
       }
+      case 'cover': openMove({ to: btn.dataset.id, cover: true }); break;
+      case 'move-money': openMove({}); break;
       case 'edit-target': openTarget(btn.dataset.id); break;
       case 'edit-tx': editTransaction(btn.dataset.id); break;
+      case 'new-tx': openTx(); break;
+      case 'delete-editing-tx': {
+        const t = budget.transactions.find((x) => x.id === editingTx);
+        $('#tx-dialog').close();
+        if (t && attempt(() => B.removeTransaction(budget, t.id), `Deleted ${t.payee || 'transaction'}`)) Sounds.play('crumple');
+        break;
+      }
+      case 'close-tx': $('#tx-dialog').close(); break;
+      case 'split-tx': startSplit(); break;
+      case 'add-split': addSplitRow('', ''); updateSplitLeft(); break;
+      case 'remove-split': btn.closest('.split-row').remove(); if ($('#split-rows').children.length < 2) stopSplit(); else updateSplitLeft(); break;
+      case 'remove-receipt-draft': clearReceiptDraft(); break;
+      case 'view-receipt': openReceipt(btn.dataset.id, btn.dataset.tx); break;
+      case 'delete-receipt': deleteReceipt(); break;
+      case 'new-envelope': $('#env-form').reset(); $('#env-dialog').showModal(); break;
       case 'toggle-group': toggleCollapsed(btn.dataset.group); render(); break;
       case 'toggle-hidden': showHidden = !showHidden; render(); break;
-      case 'hide-group':
-        if (confirm(`Hide the group "${btn.dataset.group}"? Its envelopes keep their money and still count in totals.`)) {
-          attempt(() => B.setGroupHidden(budget, btn.dataset.group, true));
-        }
+      case 'group-color': openColor(btn.dataset.group); break;
+      case 'set-color':
+        if (attempt(() => B.setGroupColor(budget, colorGroup, Number(btn.dataset.color)))) $('#color-dialog').close();
         break;
+      case 'hide-group': attempt(() => B.setGroupHidden(budget, btn.dataset.group, true), `Hid ${btn.dataset.group}`); break;
       case 'show-group': attempt(() => B.setGroupHidden(budget, btn.dataset.group, false)); break;
       case 'unhide-envelope': {
         const env = budget.envelopes.find((x) => x.id === btn.dataset.id);
@@ -847,11 +1346,11 @@
         break;
       }
       case 'print': window.print(); break;
-      case 'cancel-edit': stopEditing(); break;
       case 'delete-envelope': {
         const f = $('#target-form');
         const env = budget.envelopes.find((e) => e.id === editingTarget);
-        if (!env || !confirm(`Delete the envelope "${env.name}"? Money assigned to it goes back to Ready to Assign.`)) break;
+        if (!env) break;
+        const snapshot = JSON.stringify(budget);
         try {
           B.deleteEnvelope(budget, editingTarget, f.moveTo.value || null);
         } catch (err) {
@@ -860,31 +1359,31 @@
           break;
         }
         $('#target-dialog').close();
+        undoStack.push({ label: `Deleted ${env.name}`, snapshot });
         attempt(() => {});
+        toast(`Deleted ${env.name}`, { action: 'Undo', onAction: undo });
+        Sounds.play('crumple');
         break;
       }
       case 'remove-recurring':
-        if (confirm('Stop this recurring transaction? Transactions already created stay.')) {
-          attempt(() => B.removeRecurring(budget, btn.dataset.id));
-        }
+        attempt(() => B.removeRecurring(budget, btn.dataset.id), 'Stopped a recurring transaction');
         break;
       case 'rename-account': {
         const acct = budget.accounts.find((a) => a.id === btn.dataset.id);
         const name = acct && prompt('New name for this account', acct.name);
-        if (name) attempt(() => B.updateAccount(budget, acct.id, { name }));
+        if (name) attempt(() => B.updateAccount(budget, acct.id, { name }), `Renamed ${acct.name}`);
         break;
       }
-      case 'delete-account':
-        if (confirm('Delete this account?')) attempt(() => B.deleteAccount(budget, btn.dataset.id));
+      case 'delete-account': {
+        const acct = budget.accounts.find((a) => a.id === btn.dataset.id);
+        if (acct && confirm(`Delete the account "${acct.name}"?`)) attempt(() => B.deleteAccount(budget, acct.id), `Deleted ${acct.name}`);
         break;
+      }
       case 'reconcile': openReconcile(btn.dataset.id); break;
       case 'open-account':
         openAccountId = btn.dataset.id;
-        currentView = 'account';
         $('#acct-search').value = '';
-        if (!editingTx) $('#tx-account').value = openAccountId;
-        render();
-        window.scrollTo(0, 0);
+        goTo('account');
         break;
       case 'new-share': flush(); openShare(null); break;
       case 'edit-share': openShare(btn.dataset.id); break;
@@ -907,7 +1406,7 @@
       case 'delete-shared-tx':
         if (confirm('Delete this spending?')) {
           api('DELETE', `/api/shared/${btn.dataset.share}/transactions/${btn.dataset.id}`)
-            .then((res) => { sharedData[btn.dataset.share] = { ...res, budget: B.fromJSON(res.budget) }; render(); })
+            .then((res) => { sharedData[btn.dataset.share] = { ...res, budget: B.fromJSON(res.budget) }; render(); Sounds.play('crumple'); })
             .catch((e) => showError(e.message));
         }
         break;
@@ -916,9 +1415,9 @@
       case 'close-goal': $('#goal-dialog').close(); break;
       case 'delete-goal': {
         const g = (budget.goals || []).find((x) => x.id === editingGoal);
-        if (g && confirm(`Delete the goal "${g.name}"? Your money is not touched.`)) {
+        if (g) {
           $('#goal-dialog').close();
-          attempt(() => B.removeGoal(budget, g.id));
+          attempt(() => B.removeGoal(budget, g.id), `Deleted the goal ${g.name}`);
         }
         break;
       }
@@ -927,10 +1426,9 @@
       case 'close-loan': $('#loan-dialog').close(); break;
       case 'remove-loan': {
         const acct = budget.accounts.find((a) => a.id === editingLoan);
-        if (acct && confirm(`Stop tracking ${acct.name} as a loan? The account and its transactions stay.`)) {
-          delete acct.loan;
+        if (acct) {
           $('#loan-dialog').close();
-          attempt(() => {});
+          attempt(() => { delete acct.loan; }, `Stopped tracking ${acct.name} as a loan`);
         }
         break;
       }
@@ -940,9 +1438,8 @@
         if (!acct || !(amount > 0)) break;
         const done = loanTransactions(acct.id).some((t) => t.payee === 'Interest' && t.date.slice(0, 7) === thisMonth());
         if (done && !confirm('Interest was already recorded this month. Record it again?')) break;
-        if (attempt(() => B.addTransaction(budget, { kind: 'spend', date: todayISO(), payee: 'Interest', amount, accountId: acct.id }))) {
-          toast(`Added ${money(amount)} interest to ${acct.name}`);
-        }
+        attempt(() => B.addTransaction(budget, { kind: 'spend', date: todayISO(), payee: 'Interest', amount, accountId: acct.id }),
+          `Added ${money(amount)} interest to ${acct.name}`);
         break;
       }
       case 'add-rate-change': {
@@ -963,31 +1460,54 @@
         if (!lastCalc) break;
         const name = prompt('Name of the envelope for the loan payment', 'Loan payment');
         if (!name) break;
-        if (attempt(() => B.addEnvelope(budget, { name, group: 'Loans', target: { type: 'monthly', amount: lastCalc.payment + lastCalc.extra } }))) {
-          toast(`Created "${name}" with a target of ${money(lastCalc.payment + lastCalc.extra)} a month`);
-        }
+        attempt(() => B.addEnvelope(budget, { name, group: 'Loans', target: { type: 'monthly', amount: lastCalc.payment + lastCalc.extra } }),
+          `Created "${name}" with a target of ${money(lastCalc.payment + lastCalc.extra)} a month`);
         break;
       }
-      case 'back-to-accounts': currentView = 'accounts'; render(); break;
+      case 'back-to-accounts': goTo('accounts'); break;
       case 'close-reconcile': $('#reconcile-dialog').close(); break;
       case 'close-target': $('#target-dialog').close(); break;
+      case 'close-dialog': { const d = btn.closest('dialog'); if (d) d.close(); break; }
+      case 'more': $('#more-dialog').showModal(); break;
       case 'export': exportBackup(); break;
       case 'import': $('#import-file').click(); break;
       case 'import-actual': $('#import-actual-file').click(); break;
+      case 'bank-import': openBankImport(currentView === 'account' ? openAccountId : null); break;
       case 'logout': logout(); break;
       case 'reset':
-        if (confirm('Erase every envelope and transaction on your account? Export a backup first if unsure.')) {
-          budget = B.create();
-          attempt(() => {});
+        if (confirm('Erase every envelope and transaction on your account? You can undo this right after.')) {
+          attempt(() => { budget = B.create(); }, 'Erased all budget data');
         }
         break;
+      case 'delete-my-account': deleteMyAccount(); break;
+      case 'twofa': twofaFlow(); break;
+      case 'test-sound': {
+        const was = Sounds.on;
+        Sounds.set({ on: true });
+        Sounds.play('register');
+        Sounds.set({ on: was });
+        break;
+      }
+      case 'show-keys': $('#keys-dialog').showModal(); break;
+      case 'open-welcome': openWelcome(); break;
+      case 'open-recap': {
+        // The month shown, or (for the current month) the last one with transactions.
+        let m = month === thisMonth() ? B.shiftMonth(month, -1) : month;
+        for (let i = 0; i < 24 && !budget.transactions.some((t) => t.date.slice(0, 7) === m); i++) m = B.shiftMonth(m, -1);
+        recapMonth = budget.transactions.some((t) => t.date.slice(0, 7) === m) ? m : B.shiftMonth(thisMonth(), -1);
+        goTo('recap');
+        break;
+      }
+      case 'recap-month': recapMonth = btn.dataset.month; renderRecap(); break;
+      case 'dismiss-recap': markRecapSeen(); renderRecapBanner(); break;
+      case 'see-recap': markRecapSeen(); recapMonth = B.shiftMonth(thisMonth(), -1); goTo('recap'); break;
+      case 'apply-hint': {
+        const amount = Number(btn.dataset.amount);
+        attempt(() => B.setTarget(budget, btn.dataset.id, { type: 'monthly', amount }), `Set ${envName(btn.dataset.id)} to ${money(amount)} a month`);
+        break;
+      }
     }
   });
-
-  document.querySelectorAll('[data-view]').forEach((btn) => btn.addEventListener('click', () => {
-    currentView = btn.dataset.view;
-    render();
-  }));
 
   let reconcilingAccount = null;
   function openReconcile(id) {
@@ -1008,6 +1528,7 @@
     const f = ev.target;
     const bank = B.parseMoney(f.bank.value);
     let diff = 0;
+    const snapshot = JSON.stringify(budget);
     try {
       if (Number.isNaN(bank)) throw new Error('Enter the balance your bank shows.');
       diff = B.reconcileAccount(budget, reconcilingAccount, bank, f.date.value);
@@ -1017,8 +1538,10 @@
       return;
     }
     $('#reconcile-dialog').close();
+    undoStack.push({ label: 'Reconciled', snapshot });
     attempt(() => {});
     const acct = budget.accounts.find((a) => a.id === reconcilingAccount);
+    Sounds.play('register');
     celebrate(diff === 0
       ? `🎉 ${acct ? acct.name : 'Account'} matches your bank`
       : `🎉 Reconciled. Added an adjustment of ${money(diff)} to match your bank`);
@@ -1031,7 +1554,7 @@
     const ok = attempt(() => {
       if (Number.isNaN(bal)) throw new Error('Balance must be an amount like 1200.00.');
       B.addAccount(budget, { name: f.acctName.value, balance: bal, date: todayISO(), offBudget: f.offBudget.checked });
-    });
+    }, `Added the account ${f.acctName.value}`);
     if (ok) f.reset();
   });
 
@@ -1044,11 +1567,17 @@
         render();
         return;
       }
+      const before = B.assignedIn(budget, month, t.dataset.env);
+      if (cents === before) return;
       const prev = B.monthView(budget, month);
-      if (attempt(() => B.setAssigned(budget, month, t.dataset.env, cents))) fundFx(prev, [t.dataset.env]);
+      const wasOk = prev.groups.flatMap((g) => g.envelopes).find((e) => e.id === t.dataset.env);
+      if (attempt(() => B.setAssigned(budget, month, t.dataset.env, cents), `${envName(t.dataset.env)}: ${money(before)} → ${money(cents)}`)) {
+        fundFx(prev, [t.dataset.env]);
+        const after = B.envelopeStatus(budget, t.dataset.env, month);
+        if (wasOk && wasOk.available >= 0 && after.available < 0) Sounds.play('thud');
+      }
     } else if (t.id === 'currency') {
-      budget.currency = t.value;
-      attempt(() => {});
+      attempt(() => { budget.currency = t.value; }, `Currency set to ${t.value}`);
     } else if (t.id === 'acct-period') {
       renderAccountPage();
     } else if (t.id === 'report-months') {
@@ -1057,16 +1586,33 @@
       applyDensity(t.value);
     } else if (t.id === 'theme') {
       applyTheme(t.value);
+    } else if (t.id === 'font') {
+      applyFont(t.value);
+      render();
+    } else if (t.id === 'sound-on') {
+      Sounds.set({ on: t.checked });
+      if (t.checked) Sounds.play('coin');
+      renderSettings();
+    } else if (t.id === 'sound-volume') {
+      Sounds.set({ volume: Number(t.value) / 100 });
+      Sounds.play('coin');
     } else if (t.id === 'import-actual-file') {
       importActual(t.files[0]);
       t.value = '';
     } else if (t.id === 'import-file') {
       importBackup(t.files[0]);
       t.value = '';
+    } else if (t.id === 'tx-receipt') {
+      takeReceipt(t.files[0]);
+      t.value = '';
+    } else if (t.matches('#search-account, #search-envelope, #search-from, #search-to')) {
+      renderSearch();
     }
   });
 
   $('#acct-search').addEventListener('input', () => renderAccountPage());
+  $('#search-q').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(renderSearch, 120); });
+  let searchTimer = null;
 
   // Flush pending changes when the tab is hidden, e.g. before the browser closes it.
   document.addEventListener('visibilitychange', async () => {
@@ -1077,10 +1623,66 @@
     // Coming back to the tab: pick up changes made on other devices.
     reloadFromServer();
   });
+  window.addEventListener('online', () => { if (dirty) flush(); });
 
-  document.querySelectorAll('input[name="kind"]').forEach((r) => r.addEventListener('change', syncKind));
+  // Keyboard shortcuts. Ignored while typing, except Escape (dialogs close by themselves).
+  document.addEventListener('keydown', (ev) => {
+    if (!account || $('#app').hidden) return;
+    const typing = ev.target.closest && ev.target.closest('input, textarea, select, [contenteditable="true"]');
+    if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'z' && !typing) {
+      ev.preventDefault();
+      undo();
+      return;
+    }
+    if (typing || ev.ctrlKey || ev.metaKey || ev.altKey || document.querySelector('dialog[open]')) return;
+    const views = { 1: 'budget', 2: 'accounts', 3: 'reports', 4: 'goals', 5: 'loans' };
+    const k = ev.key;
+    if (k === 'n' || k === 'N') { ev.preventDefault(); openTx(); }
+    else if (k === 'e' || k === 'E') { ev.preventDefault(); $('#env-form').reset(); $('#env-dialog').showModal(); }
+    else if (k === 'm' || k === 'M') { ev.preventDefault(); openMove({}); }
+    else if (k === '/') { ev.preventDefault(); goTo('search'); }
+    else if (k === 'ArrowLeft') { month = B.shiftMonth(month, -1); render(); }
+    else if (k === 'ArrowRight') { month = B.shiftMonth(month, 1); render(); }
+    else if (k === 't' || k === 'T') { month = thisMonth(); render(); }
+    else if (k === '?') { $('#keys-dialog').showModal(); }
+    else if (views[k]) goTo(views[k]);
+  });
+
+  // Transaction drawer
+
+  let envTouched = false;
+  let splitOn = false;
+  let receiptDraft = null; // { blob, url } waiting to be uploaded
+  let receiptKeep = null; // receipt id already on the transaction being edited
+  const LAST_ACCOUNT = 'envelo.lastAccount';
+
+  function openTx({ accountId = null, envelopeId = null } = {}) {
+    editingTx = null;
+    const f = $('#tx-form');
+    f.reset();
+    stopSplit();
+    clearReceiptDraft();
+    receiptKeep = null;
+    envTouched = !!envelopeId;
+    f.date.value = todayISO();
+    renderEnvelopeOptions();
+    let acct = accountId || (currentView === 'account' ? openAccountId : null);
+    if (!acct) { try { acct = localStorage.getItem(LAST_ACCOUNT); } catch { acct = null; } }
+    if (acct && budget.accounts.some((a) => a.id === acct)) f.accountId.value = acct;
+    if (envelopeId) f.envelopeId.value = envelopeId;
+    $('#tx-heading').textContent = 'Add transaction';
+    $('#tx-submit').textContent = 'Save transaction';
+    $('#tx-delete').hidden = true;
+    $('#tx-error').hidden = true;
+    syncKind();
+    if (!$('#tx-dialog').open) $('#tx-dialog').showModal();
+    setTimeout(() => f.amount.focus(), 30);
+  }
+
+  document.querySelectorAll('input[name="kind"]').forEach((r) => r.addEventListener('change', () => { if (splitOn) stopSplit(); syncKind(); }));
   $('#tx-account').addEventListener('change', syncKind);
   $('#tx-to').addEventListener('change', syncKind);
+  $('#tx-envelope').addEventListener('change', () => { envTouched = true; });
   function syncKind() {
     const kind = document.querySelector('input[name="kind"]:checked').value;
     const from = $('#tx-account').value;
@@ -1090,11 +1692,144 @@
     const needsEnvelope = kind === 'spend'
       ? B.isOnBudget(budget, from)
       : kind === 'transfer' && !!to && B.transferNeedsEnvelope(budget, from, to);
-    $('#tx-envelope-field').hidden = !needsEnvelope;
-    $('#tx-envelope').required = needsEnvelope;
+    $('#tx-envelope-field').hidden = !needsEnvelope || splitOn;
+    $('#tx-envelope').required = needsEnvelope && !splitOn;
+    $('#split-toggle').hidden = !(kind === 'spend' && B.isOnBudget(budget, from)) || splitOn;
+    $('#split-box').hidden = !splitOn;
     $('#tx-to-field').hidden = kind !== 'transfer';
     $('#tx-account-label').textContent = kind === 'transfer' ? 'From account' : 'Account';
-    $('#tx-repeat-field').hidden = kind === 'transfer' || !!editingTx;
+    $('#tx-repeat-field').hidden = kind === 'transfer' || !!editingTx || splitOn;
+  }
+
+  // Payee memory: a known payee fills in the envelope and account used last time.
+  $('#tx-form').payee.addEventListener('change', (ev) => {
+    if (editingTx) return;
+    const mem = B.payeeMemory(budget, ev.target.value);
+    if (!mem) return;
+    const f = $('#tx-form');
+    if (!envTouched && !splitOn) {
+      f.querySelector(`input[name="kind"][value="${mem.kind}"]`).checked = true;
+      if (mem.envelopeId) f.envelopeId.value = mem.envelopeId;
+    }
+    if (mem.accountId && budget.accounts.some((a) => a.id === mem.accountId)) f.accountId.value = mem.accountId;
+    syncKind();
+  });
+
+  // Splits
+  function envelopeOptionsHtml(selected) {
+    const pickable = budget.envelopes.filter((e) => !B.isHidden(budget, e) || e.id === selected);
+    return `<option value="">Pick an envelope</option>${pickable.map((e) => `<option value="${e.id}" ${e.id === selected ? 'selected' : ''}>${esc(e.group)} · ${esc(e.name)}</option>`).join('')}`;
+  }
+  function addSplitRow(envelopeId, amount) {
+    const row = document.createElement('div');
+    row.className = 'split-row';
+    row.innerHTML = `<select aria-label="Envelope">${envelopeOptionsHtml(envelopeId)}</select>
+      <input type="text" inputmode="decimal" aria-label="Amount" placeholder="0.00" value="${esc(amount)}">
+      <button type="button" class="icon" data-action="remove-split" aria-label="Remove this line">&times;</button>`;
+    row.querySelector('input').addEventListener('input', updateSplitLeft);
+    $('#split-rows').appendChild(row);
+  }
+  function startSplit(lines = null) {
+    const f = $('#tx-form');
+    splitOn = true;
+    $('#split-rows').innerHTML = '';
+    if (lines) lines.forEach((l) => addSplitRow(l.envelopeId, B.toInput(l.amount)));
+    else {
+      addSplitRow(f.envelopeId.value, f.amount.value);
+      addSplitRow('', '');
+    }
+    syncKind();
+    updateSplitLeft();
+  }
+  function stopSplit() {
+    splitOn = false;
+    $('#split-rows').innerHTML = '';
+    syncKind();
+  }
+  function splitLines() {
+    return [...document.querySelectorAll('#split-rows .split-row')].map((r) => ({
+      envelopeId: r.querySelector('select').value,
+      amount: B.parseMoney(r.querySelector('input').value || '0'),
+    }));
+  }
+  function updateSplitLeft() {
+    const total = B.parseMoney($('#tx-form').amount.value || '0');
+    const used = splitLines().reduce((s, l) => s + (Number.isNaN(l.amount) ? 0 : l.amount), 0);
+    const left = (Number.isNaN(total) ? 0 : total) - used;
+    const el = $('#split-left');
+    el.textContent = left === 0 ? '✓ Adds up' : left > 0 ? `${money(left)} left` : `${money(-left)} too much`;
+    el.classList.toggle('split-left-bad', left !== 0);
+  }
+  $('#tx-form').amount.addEventListener('input', () => { if (splitOn) updateSplitLeft(); });
+
+  // Receipts: photos are shrunk and turned into WebP on the device (JPEG
+  // where the browser cannot make WebP) before upload.
+  async function takeReceipt(file) {
+    if (!file) return;
+    try {
+      const blob = await shrinkImage(file);
+      clearReceiptDraft();
+      receiptDraft = { blob, url: URL.createObjectURL(blob) };
+      receiptKeep = null;
+      showReceiptPreview(receiptDraft.url);
+    } catch {
+      $('#tx-error').textContent = 'Could not read that photo.';
+      $('#tx-error').hidden = false;
+    }
+  }
+  function shrinkImage(file, max = 1600) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.naturalWidth * scale);
+        canvas.height = Math.round(img.naturalHeight * scale);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((webp) => {
+          if (webp && webp.type === 'image/webp') return resolve(webp);
+          canvas.toBlob((jpeg) => (jpeg ? resolve(jpeg) : reject(new Error('encode'))), 'image/jpeg', 0.82);
+        }, 'image/webp', 0.8);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('load')); };
+      img.src = url;
+    });
+  }
+  function showReceiptPreview(src) {
+    $('#tx-receipt-preview').innerHTML = src
+      ? `<img src="${esc(src)}" alt="Receipt"><button type="button" class="link" data-action="remove-receipt-draft">Remove</button>`
+      : '';
+  }
+  function clearReceiptDraft() {
+    if (receiptDraft) URL.revokeObjectURL(receiptDraft.url);
+    receiptDraft = null;
+    receiptKeep = null;
+    showReceiptPreview(null);
+  }
+  async function uploadReceipt(blob) {
+    const res = await fetch('/api/receipts', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': blob.type, 'X-Client-Id': clientId }, body: blob,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'The receipt could not be uploaded.');
+    return data.id;
+  }
+  let viewingReceipt = null;
+  function openReceipt(id, txId) {
+    viewingReceipt = { id, txId };
+    $('#receipt-img').src = `/api/receipts/${encodeURIComponent(id)}`;
+    $('#receipt-dialog').showModal();
+  }
+  function deleteReceipt() {
+    if (!viewingReceipt || !confirm('Remove this receipt photo? This cannot be undone.')) return;
+    const { id, txId } = viewingReceipt;
+    api('DELETE', `/api/receipts/${encodeURIComponent(id)}`).catch(() => {});
+    $('#receipt-dialog').close();
+    attempt(() => {
+      for (const t of budget.transactions) if (t.receiptId === id && (!txId || t.id === txId || t.splitId)) delete t.receiptId;
+    });
   }
 
   function editTransaction(id) {
@@ -1104,72 +1839,117 @@
     const main = t.transferId && t.amount > 0
       ? budget.transactions.find((x) => x.transferId === t.transferId && x.amount < 0) || t
       : t;
+    openTx();
     editingTx = main.id;
     const f = $('#tx-form');
+    const legs = main.splitId ? B.splitLegs(budget, main.id) : [main];
     const kind = B.transactionKind(main);
     f.querySelector(`input[name="kind"][value="${kind}"]`).checked = true;
     f.date.value = main.date;
     f.payee.value = main.payee || '';
-    f.amount.value = B.toInput(Math.abs(main.amount));
+    f.amount.value = B.toInput(Math.abs(legs.reduce((s, l) => s + l.amount, 0)));
     f.note.value = main.note || '';
-    if (main.envelopeId) f.envelopeId.value = main.envelopeId;
     f.accountId.value = main.accountId;
+    if (main.envelopeId) f.envelopeId.value = main.envelopeId;
     if (main.toAccountId) f.toAccountId.value = main.toAccountId;
-    f.repeat.value = '';
+    envTouched = true;
+    const receipt = legs.map((l) => l.receiptId).find(Boolean) || null;
+    receiptKeep = receipt;
+    showReceiptPreview(receipt ? `/api/receipts/${encodeURIComponent(receipt)}` : null);
+    if (legs.length > 1) startSplit(legs.map((l) => ({ envelopeId: l.envelopeId, amount: -l.amount })));
     $('#tx-heading').textContent = 'Edit transaction';
     $('#tx-submit').textContent = 'Update transaction';
-    $('#tx-cancel').hidden = false;
-    syncKind();
-    f.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }
-
-  function stopEditing() {
-    editingTx = null;
-    const f = $('#tx-form');
-    f.payee.value = '';
-    f.amount.value = '';
-    f.note.value = '';
-    f.repeat.value = '';
-    $('#tx-heading').textContent = 'Add transaction';
-    $('#tx-submit').textContent = 'Save transaction';
-    $('#tx-cancel').hidden = true;
+    $('#tx-delete').hidden = false;
     syncKind();
   }
 
-  $('#tx-form').addEventListener('submit', (ev) => {
+  $('#tx-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const f = ev.target;
     const kind = f.kind.value;
     const cents = B.parseMoney(f.amount.value);
+    const err = $('#tx-error');
+    err.hidden = true;
+    const fail = (msg) => { err.textContent = msg; err.hidden = false; };
+    if (Number.isNaN(cents) || cents === 0) return fail('Enter an amount like 12.50.');
+    let lines = null;
+    if (splitOn) {
+      lines = splitLines().filter((l) => l.envelopeId || l.amount);
+      if (lines.some((l) => !l.envelopeId)) return fail('Pick an envelope for every line.');
+      if (lines.some((l) => Number.isNaN(l.amount) || l.amount <= 0)) return fail('Every line needs an amount.');
+      if (lines.reduce((s, l) => s + l.amount, 0) !== Math.abs(cents)) return fail('The lines must add up to the total.');
+    }
+    let receiptId = receiptKeep;
+    if (receiptDraft) {
+      try {
+        $('#tx-submit').disabled = true;
+        receiptId = await uploadReceipt(receiptDraft.blob);
+      } catch (e) {
+        $('#tx-submit').disabled = false;
+        return fail(e.message);
+      }
+      $('#tx-submit').disabled = false;
+    }
     let scheduled = false;
+    const fields = {
+      kind,
+      date: f.date.value,
+      payee: f.payee.value,
+      note: f.note.value,
+      amount: Math.abs(cents),
+      envelopeId: $('#tx-envelope-field').hidden ? null : f.envelopeId.value,
+      accountId: f.accountId.value || null,
+      toAccountId: kind === 'transfer' ? f.toAccountId.value : null,
+    };
+    const wasEditing = !!editingTx;
+    const label = `${wasEditing ? 'Updated' : 'Added'} ${fields.payee || (kind === 'income' ? 'income' : 'transaction')} ${money(kind === 'spend' ? -fields.amount : fields.amount)}`;
     const ok = attempt(() => {
-      if (Number.isNaN(cents)) throw new Error('Enter an amount like 12.50.');
-      const fields = {
-        kind,
-        date: f.date.value,
-        payee: f.payee.value,
-        note: f.note.value,
-        amount: Math.abs(cents),
-        envelopeId: $('#tx-envelope-field').hidden ? null : f.envelopeId.value,
-        accountId: f.accountId.value || null,
-        toAccountId: kind === 'transfer' ? f.toAccountId.value : null,
-      };
+      let main;
       if (editingTx) {
-        B.updateTransaction(budget, editingTx, fields);
+        const old = budget.transactions.find((x) => x.id === editingTx);
+        if (lines) {
+          const sid = old && old.splitId;
+          B.removeTransaction(budget, editingTx);
+          main = B.addSplit(budget, { ...fields, lines, splitId: sid, keepId: editingTx, receiptId });
+        } else if (old && old.splitId) {
+          B.removeTransaction(budget, editingTx);
+          main = B.addTransaction(budget, fields);
+          main.id = editingTx;
+        } else {
+          main = B.updateTransaction(budget, editingTx, fields);
+        }
+      } else if (lines) {
+        main = B.addSplit(budget, { ...fields, lines, receiptId });
       } else if (f.repeat.value && kind !== 'transfer') {
         const freq = f.repeat.value === 'biweekly' ? 'weekly' : f.repeat.value;
         const every = f.repeat.value === 'biweekly' ? 2 : 1;
         B.addRecurring(budget, { ...fields, freq, every, next: fields.date });
         scheduled = B.applyRecurring(budget, todayISO()) === 0;
       } else {
-        B.addTransaction(budget, fields);
+        main = B.addTransaction(budget, fields);
       }
-    });
-    if (ok) {
-      const wasEditing = !!editingTx;
-      stopEditing();
-      if (scheduled) setSync(`Scheduled: it will be added on ${f.date.value}`);
-      if (!wasEditing) f.amount.focus();
+      if (main && !lines) {
+        if (receiptId) main.receiptId = receiptId; else delete main.receiptId;
+      }
+    }, label);
+    if (!ok) {
+      fail($('#error').textContent);
+      showError('');
+      return;
+    }
+    try { if (fields.accountId) localStorage.setItem(LAST_ACCOUNT, fields.accountId); } catch { /* ignore */ }
+    receiptDraft = null;
+    receiptKeep = null;
+    Sounds.play('tick');
+    if (scheduled) setSync(`Scheduled: it will be added on ${f.date.value}`);
+    if (wasEditing) {
+      $('#tx-dialog').close();
+    } else {
+      // Stay open for the next one, keeping the date and account.
+      const keepDate = f.date.value;
+      const keepAcct = f.accountId.value;
+      openTx({ accountId: keepAcct });
+      f.date.value = keepDate;
     }
   });
 
@@ -1181,13 +1961,72 @@
     const ok = attempt(() => {
       if (goal !== null && Number.isNaN(goal)) throw new Error('Goal must be an amount like 500.00.');
       B.addEnvelope(budget, { name: f.name.value, group: f.group.value, goal });
-    });
-    if (ok) f.reset();
+    }, `Added the envelope ${f.name.value}`);
+    if (ok) {
+      f.reset();
+      $('#env-dialog').close();
+    }
   });
 
-  // Default the date field to today and sync the type toggle on load.
-  $('#tx-form').date.value = todayISO();
-  syncKind();
+  // Move money between envelopes (or from and to Ready to Assign).
+  function openMove({ to = '', from = '', cover = false }) {
+    const f = $('#move-form');
+    f.reset();
+    $('#move-error').hidden = true;
+    const view = B.monthView(budget, month);
+    const envs = view.groups.flatMap((g) => g.envelopes).filter((e) => !e.hidden || e.id === to);
+    const opt = (e) => `<option value="${e.id}">${esc(e.name)} (${esc(money(e.available))})</option>`;
+    const rta = `<option value="">Ready to Assign (${esc(money(view.readyToAssign))})</option>`;
+    f.from.innerHTML = rta + envs.map(opt).join('');
+    f.to.innerHTML = rta + envs.map(opt).join('');
+    $('#move-title').textContent = cover ? 'Cover overspending' : 'Move money';
+    $('#move-info').textContent = '';
+    if (cover) {
+      const target = envs.find((e) => e.id === to);
+      const need = target ? -target.available : 0;
+      // Take it from the envelope with the most money, or Ready to Assign.
+      const donor = envs.filter((e) => e.id !== to && e.available >= need).sort((x, y) => y.available - x.available)[0];
+      f.to.value = to;
+      f.from.value = view.readyToAssign >= need ? '' : donor ? donor.id : '';
+      f.amount.value = B.toInput(need);
+      $('#move-info').textContent = target ? `${target.name} is overspent by ${money(need)}. Pick where the money comes from.` : '';
+    } else {
+      if (to) f.to.value = to;
+      if (from) f.from.value = from;
+    }
+    $('#move-dialog').showModal();
+    setTimeout(() => (cover ? f.from : f.amount).focus(), 30);
+  }
+  $('#move-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    const cents = B.parseMoney(f.amount.value);
+    const from = f.from.value || null;
+    const to = f.to.value || null;
+    const prev = B.monthView(budget, month);
+    try {
+      if (Number.isNaN(cents)) throw new Error('Enter an amount like 25.00.');
+      const test = B.fromJSON(JSON.parse(JSON.stringify(budget)));
+      B.moveMoney(test, month, from, to, cents);
+    } catch (err) {
+      $('#move-error').textContent = err.message;
+      $('#move-error').hidden = false;
+      return;
+    }
+    $('#move-dialog').close();
+    const label = `Moved ${money(cents)} ${from ? `from ${envName(from)}` : 'from Ready to Assign'} to ${to ? envName(to) : 'Ready to Assign'}`;
+    if (attempt(() => B.moveMoney(budget, month, from, to, cents), label) && to) fundFx(prev, [to]);
+  });
+
+  let colorGroup = null;
+  function openColor(group) {
+    colorGroup = group;
+    const current = budget.groupColors[group];
+    $('#color-title').textContent = `Colour of ${group}`;
+    $('#color-swatches').innerHTML = Array.from({ length: B.GROUP_COLORS }, (_, i) =>
+      `<button type="button" class="sw-${i}${i === current ? ' on' : ''}" data-action="set-color" data-color="${i}" aria-label="Colour ${i + 1}"></button>`).join('');
+    $('#color-dialog').showModal();
+  }
 
   // Live updates. The server announces every save; this tab then loads the
   // new version, unless it has unsaved changes of its own (its save will be
@@ -1264,7 +2103,7 @@
       }
     }));
     for (const id of Object.keys(sharedData)) if (!shares.incoming.some((sh) => sh.id === id)) delete sharedData[id];
-    $('#nav-shared').hidden = !shares.incoming.length;
+    document.querySelectorAll('.nav-shared').forEach((el) => { el.hidden = !shares.incoming.length; });
     if (currentView === 'shared' && !shares.incoming.length) currentView = 'budget';
     render();
   }
@@ -1353,7 +2192,7 @@
         <td class="env-cell"><div class="env-name">${esc(e.name)}</div><div class="goal">${esc(g.name)}</div></td>
         <td class="num" data-label="Assigned">${esc(fmt(e.assigned))}</td>
         <td class="num" data-label="Spent">${esc(fmt(e.activity))}</td>
-        <td class="num" data-label="Available"><span class="avail ${e.available < 0 ? 'neg' : e.available === 0 ? 'zero' : ''}">${esc(fmt(e.available))}</span></td>
+        <td class="num" data-label="Available"><span class="chip ${e.available < 0 ? "neg" : e.available === 0 ? "zero" : "ok"}">${esc(fmt(e.available))}</span></td>
       </tr>`)).join('');
       const txs = b.transactions.filter((t) => t.date.slice(0, 7) === month).sort((x, y) => (x.date < y.date ? 1 : -1));
       const envName = Object.fromEntries(b.envelopes.map((e) => [e.id, e.name]));
@@ -1416,6 +2255,309 @@
       err.hidden = false;
     }
   });
+
+  // Bank file import
+
+  const C = BankCsv;
+  let csv = null; // { accountId, layout, text }
+  const ROLES = [['date', 'Date'], ['payee', 'Payee / description'], ['amount', 'Amount'], ['debit', 'Money out'], ['credit', 'Money in'], ['note', 'Note']];
+
+  function openBankImport(accountId) {
+    csv = { accountId: accountId || (budget.accounts[0] || {}).id || '', layout: null, text: '' };
+    renderCsv();
+    if (!$('#csv-dialog').open) $('#csv-dialog').showModal();
+  }
+
+  function csvSteps(n) {
+    return `<div class="csv-steps">${['Choose the file', 'Check the columns', 'Import'].map((t, i) => `<span class="${i === n ? 'on' : ''}">${i + 1}. ${t}</span>`).join('')}</div>`;
+  }
+
+  function renderCsv() {
+    const body = $('#csv-body');
+    if (!budget.accounts.length) {
+      body.innerHTML = `<h2>Import a bank file</h2><p>Add the account first, on the Accounts page, then import its file.</p>
+        <div class="row"><button type="button" class="btn" data-action="close-dialog">Close</button></div>`;
+      return;
+    }
+    if (!csv.layout) {
+      body.innerHTML = `<h2>Import a bank file</h2>${csvSteps(0)}
+        <label>Into account <select id="csv-account">${budget.accounts.map((a) => `<option value="${a.id}" ${a.id === csv.accountId ? 'selected' : ''}>${esc(a.name)}${a.csvLayout ? ' · layout remembered' : ''}</option>`).join('')}</select></label>
+        <label class="btn file-btn">Choose a CSV file<input type="file" id="csv-file" accept=".csv,.txt,text/csv" hidden></label>
+        <p class="hint">Download a CSV of the account from your bank's website or app. Revolut: Statement → Excel/CSV. N26: Downloads → CSV.
+          Any bank works: Envelo works out the columns the first time and remembers them for this account.</p>
+        <p class="auth-message" id="csv-err" hidden></p>
+        <div class="row"><button type="button" class="btn" data-action="close-dialog">Cancel</button></div>`;
+      $('#csv-account').addEventListener('change', (ev) => { csv.accountId = ev.target.value; });
+      $('#csv-file').addEventListener('change', (ev) => readCsvFile(ev.target.files[0]));
+      return;
+    }
+    const acct = budget.accounts.find((a) => a.id === csv.accountId);
+    const onBudget = acct && !acct.offBudget;
+    const L = csv.layout;
+    const { transactions, errors } = C.toTransactions(L);
+    const marked = C.markDuplicates(transactions, budget.transactions.filter((t) => t.accountId === csv.accountId));
+    csv.rows = marked;
+    const fresh = marked.filter((t) => !t.duplicate);
+    const colOptions = (role) => `<option value="-1">—</option>${L.header.map((h, i) => `<option value="${i}" ${L.columns[role] === i ? 'selected' : ''}>${esc(h || `Column ${i + 1}`)}</option>`).join('')}`;
+    const how = L.preset ? `Recognised a <b>${esc(L.presetName)}</b> export.`
+      : acct && acct.csvLayout && acct.csvLayout.signature === L.signature ? 'Using the layout from last time.'
+      : 'Worked out the layout. Check the columns below.';
+    const envOpts = (t) => {
+      const mem = B.payeeMemory(budget, t.payee);
+      const pick = t.envelopeId !== undefined ? t.envelopeId : mem && mem.envelopeId && (t.amount < 0) === (mem.kind === 'spend') ? mem.envelopeId : '';
+      t.envelopeId = pick;
+      const first = t.amount > 0 ? 'Ready to Assign' : 'To categorise';
+      return `<option value="">${first}</option>${budget.envelopes.filter((e) => !B.isHidden(budget, e) || e.id === pick).map((e) => `<option value="${e.id}" ${e.id === pick ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}`;
+    };
+    const shown = marked.slice(0, 1000);
+    $('#csv-body').innerHTML = `<h2>Import into ${esc(acct ? acct.name : '')}</h2>${csvSteps(1)}
+      <p>${how} ${fresh.length} new transaction${fresh.length === 1 ? '' : 's'}${marked.length - fresh.length ? `, ${marked.length - fresh.length} already in Envelo (skipped)` : ''}${errors.length ? `, ${errors.length} row${errors.length === 1 ? '' : 's'} could not be read` : ''}.</p>
+      <div class="csv-map">
+        ${ROLES.map(([role, label]) => `<label>${label}<select data-csv-role="${role}">${colOptions(role)}</select></label>`).join('')}
+        <label>Date format<select id="csv-datefmt">${C.DATE_FORMATS.map((f) => `<option ${f === L.dateFormat ? 'selected' : ''}>${f}</option>`).join('')}</select></label>
+        <label>Decimals<select id="csv-decimal"><option value="," ${L.decimal === ',' ? 'selected' : ''}>12,50</option><option value="." ${L.decimal === '.' ? 'selected' : ''}>12.50</option></select></label>
+      </div>
+      <p class="hint">Use Amount when the file has one column with minus signs, or Money out and Money in when it has two.${onBudget ? ' Envelopes come from what you used for the same payee before; anything new goes to "To categorise".' : ''}</p>
+      <div class="table-wrap" style="max-height:46vh;overflow:auto"><table class="csv-preview">
+        <thead><tr><th>Date</th><th>Payee</th><th class="num">Amount</th>${onBudget ? '<th>Envelope</th>' : ''}</tr></thead>
+        <tbody>${shown.map((t, i) => `<tr class="${t.duplicate ? 'dup' : ''}" title="${t.duplicate ? 'Already in Envelo' : ''}">
+          <td>${esc(t.date)}</td><td>${esc(t.payee)}</td><td class="num">${esc(money(t.amount))}</td>
+          ${onBudget ? `<td>${t.duplicate ? '' : `<select data-csv-env="${i}">${envOpts(t)}</select>`}</td>` : ''}</tr>`).join('')}</tbody>
+      </table></div>
+      <div class="row">
+        <button type="button" class="btn primary" id="csv-go" ${fresh.length ? '' : 'disabled'}>Import ${fresh.length} transaction${fresh.length === 1 ? '' : 's'}</button>
+        <button type="button" class="btn" id="csv-back">Choose another file</button>
+        <button type="button" class="btn" data-action="close-dialog">Cancel</button>
+      </div>`;
+    document.querySelectorAll('[data-csv-role]').forEach((sel) => sel.addEventListener('change', () => {
+      L.columns[sel.dataset.csvRole] = Number(sel.value);
+      if (sel.dataset.csvRole === 'amount' && Number(sel.value) >= 0) { L.columns.debit = -1; L.columns.credit = -1; }
+      if (['debit', 'credit'].includes(sel.dataset.csvRole) && Number(sel.value) >= 0) L.columns.amount = -1;
+      L.preset = null;
+      renderCsv();
+    }));
+    $('#csv-datefmt').addEventListener('change', (ev) => { L.dateFormat = ev.target.value; renderCsv(); });
+    $('#csv-decimal').addEventListener('change', (ev) => { L.decimal = ev.target.value; renderCsv(); });
+    document.querySelectorAll('[data-csv-env]').forEach((sel) => sel.addEventListener('change', () => {
+      csv.rows[Number(sel.dataset.csvEnv)].envelopeId = sel.value;
+    }));
+    $('#csv-back').addEventListener('click', () => { csv.layout = null; renderCsv(); });
+    $('#csv-go').addEventListener('click', importCsvRows);
+  }
+
+  async function readCsvFile(file) {
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      let text = new TextDecoder('utf-8').decode(buf);
+      // Older bank exports are often in Windows-1252, not UTF-8.
+      if (text.includes('�')) text = new TextDecoder('windows-1252').decode(buf);
+      const acct = budget.accounts.find((a) => a.id === csv.accountId);
+      csv.text = text;
+      csv.layout = C.analyze(text, acct && acct.csvLayout);
+      renderCsv();
+    } catch (err) {
+      const el = $('#csv-err');
+      if (el) { el.textContent = `Could not read the file: ${err.message}`; el.hidden = false; }
+    }
+  }
+
+  function importCsvRows() {
+    const acct = budget.accounts.find((a) => a.id === csv.accountId);
+    if (!acct) return;
+    const rows = csv.rows.filter((t) => !t.duplicate);
+    const onBudget = !acct.offBudget;
+    const newId = () => ((globalThis.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
+    const ok = attempt(() => {
+      let bucket = null;
+      const toCategorise = () => {
+        if (!bucket) {
+          bucket = budget.envelopes.find((e) => e.name === 'To categorise')
+            || B.addEnvelope(budget, { name: '📥 To categorise', group: 'Imported' });
+        }
+        return bucket.id;
+      };
+      for (const t of rows) {
+        let envelopeId = onBudget && t.envelopeId ? t.envelopeId : null;
+        if (onBudget && !envelopeId && t.amount < 0) envelopeId = toCategorise();
+        budget.transactions.push({
+          id: newId(), date: t.date, payee: t.payee, note: t.note, amount: t.amount,
+          envelopeId, accountId: acct.id, importKey: `bank:${C.dupKey(t)}`,
+        });
+      }
+      acct.csvLayout = C.layoutToSave(csv.layout);
+    }, `Imported ${rows.length} transaction${rows.length === 1 ? '' : 's'} into ${acct.name}`);
+    if (ok) {
+      $('#csv-dialog').close();
+      Sounds.play('register');
+    }
+  }
+
+  // First-run setup guide
+
+  const TEMPLATES = [
+    { group: 'Bills', blurb: 'Rent, utilities, internet, phone', envelopes: ['🏠 Rent or mortgage', '💡 Electricity', '🚰 Water', '📶 Internet', '📱 Phone'] },
+    { group: 'Everyday', blurb: 'Food, eating out, getting around', envelopes: ['🛒 Groceries', '🍴 Restaurants', '⛽ Fuel', '🚌 Transport'] },
+    { group: 'Fun', blurb: 'Subscriptions, gifts, hobbies', envelopes: ['🎬 Subscriptions', '🎁 Gifts', '🎨 Hobbies'] },
+    { group: 'Savings', blurb: 'Emergencies, holidays, repairs', envelopes: ['🆘 Emergency fund', '✈️ Holidays', '🔧 Repairs'] },
+  ];
+  let welcome = null;
+  function openWelcome() {
+    welcome = { step: 0, currency: budget.currency || 'EUR', account: '', balance: '', templates: new Set(['Bills', 'Everyday', 'Savings']) };
+    renderWelcome();
+    if (!$('#welcome-dialog').open) $('#welcome-dialog').showModal();
+  }
+  function renderWelcome() {
+    const w = welcome;
+    const dots = `<div class="dots">${[0, 1, 2, 3].map((i) => `<i class="${i <= w.step ? 'on' : ''}"></i>`).join('')}</div>`;
+    const body = $('#welcome-body');
+    if (w.step === 0) {
+      body.innerHTML = `${dots}<h2>Welcome to Envelo</h2>
+        <p>Every ${esc(currencyWord())} you have gets a job: you put money into envelopes like Groceries or Holidays, and spend from them. Three quick steps and you are set.</p>
+        <label>Your currency <select id="w-currency">${[...$('#currency').options].map((o) => `<option ${o.value === w.currency ? 'selected' : ''}>${o.value}</option>`).join('')}</select></label>
+        <div class="row"><button type="button" class="btn primary" id="w-next">Next</button><button type="button" class="btn" data-action="close-dialog">Skip the guide</button></div>`;
+      $('#w-currency').addEventListener('change', (ev) => { w.currency = ev.target.value; budget.currency = w.currency; });
+    } else if (w.step === 1) {
+      body.innerHTML = `${dots}<h2>Your main account</h2>
+        <p>Where your money is today, like your current account. You can add more later.</p>
+        <label>Name <input type="text" id="w-acct" placeholder="Current account" value="${esc(w.account)}"></label>
+        <label>Balance today <input type="text" id="w-bal" inputmode="decimal" placeholder="0.00" value="${esc(w.balance)}"></label>
+        <p class="auth-message" id="w-err" hidden></p>
+        <div class="row"><button type="button" class="btn primary" id="w-next">Next</button><button type="button" class="btn" id="w-back">Back</button></div>`;
+    } else if (w.step === 2) {
+      body.innerHTML = `${dots}<h2>Pick some envelopes</h2>
+        <p>Start with a few ready-made groups. Rename, delete or add envelopes any time.</p>
+        <div class="templates">${TEMPLATES.map((t) => `<div class="template"><label class="check"><input type="checkbox" data-tpl="${esc(t.group)}" ${w.templates.has(t.group) ? 'checked' : ''}><span>${esc(t.group)}</span></label>
+          <p>${esc(t.envelopes.join(', '))}</p></div>`).join('')}</div>
+        <div class="row"><button type="button" class="btn primary" id="w-next">Create my budget</button><button type="button" class="btn" id="w-back">Back</button></div>`;
+      document.querySelectorAll('[data-tpl]').forEach((c) => c.addEventListener('change', () => {
+        if (c.checked) w.templates.add(c.dataset.tpl); else w.templates.delete(c.dataset.tpl);
+      }));
+    } else {
+      body.innerHTML = `${dots}<h2>You're set 🎉</h2>
+        <p>Now give your money jobs: type amounts into the <b>Assigned</b> column until Ready to Assign reaches zero.</p>
+        <ul class="insight-list">
+          <li>Add spending with the <b>+</b> button${matchMedia('(pointer:fine)').matches ? ' or press <kbd>N</kbd>' : ''}.</li>
+          <li>Click an envelope's name to give it a target, like €300 a month.</li>
+          <li>Overspent? Click the red amount to cover it from another envelope.</li>
+          ${matchMedia('(pointer:fine)').matches ? '<li>Press <kbd>?</kbd> for all keyboard shortcuts.</li>' : ''}
+        </ul>
+        <div class="row"><button type="button" class="btn primary" data-action="close-dialog">Start budgeting</button></div>`;
+    }
+    const next = $('#w-next');
+    const back = $('#w-back');
+    if (back) back.addEventListener('click', () => { w.step--; renderWelcome(); });
+    if (!next) return;
+    next.addEventListener('click', () => {
+      if (w.step === 1) {
+        w.account = $('#w-acct').value.trim();
+        w.balance = $('#w-bal').value.trim();
+        if (w.balance && Number.isNaN(B.parseMoney(w.balance))) {
+          $('#w-err').textContent = 'Balance must be an amount like 1200.00.';
+          $('#w-err').hidden = false;
+          return;
+        }
+      }
+      if (w.step === 2) {
+        const ok = attempt(() => {
+          budget.currency = w.currency;
+          if (w.account || w.balance) {
+            B.addAccount(budget, { name: w.account || 'Current account', balance: w.balance ? B.parseMoney(w.balance) : 0, date: todayISO() });
+          }
+          for (const t of TEMPLATES) {
+            if (!w.templates.has(t.group)) continue;
+            for (const name of t.envelopes) {
+              if (!budget.envelopes.some((e) => e.name === name)) B.addEnvelope(budget, { name, group: t.group });
+            }
+          }
+        });
+        if (!ok) return;
+        Sounds.play('fanfare');
+      }
+      w.step++;
+      renderWelcome();
+    });
+  }
+
+  // Monthly recap
+
+  let recapMonth = null;
+  const recapSeenKey = () => `envelo.recapSeen.${account ? account.email : ''}`;
+  function markRecapSeen() {
+    try { localStorage.setItem(recapSeenKey(), B.shiftMonth(thisMonth(), -1)); } catch { /* ignore */ }
+  }
+  // In the first ten days of a month, offer last month's recap once.
+  function renderRecapBanner() {
+    const el = $('#recap-banner');
+    const last = B.shiftMonth(thisMonth(), -1);
+    let seen = '';
+    try { seen = localStorage.getItem(recapSeenKey()) || ''; } catch { /* ignore */ }
+    const day = Number(todayISO().slice(8, 10));
+    const hasData = budget.transactions.some((t) => t.date.slice(0, 7) === last);
+    if (month !== thisMonth() || day > 10 || seen === last || !hasData) {
+      el.innerHTML = '';
+      return;
+    }
+    el.innerHTML = `<div class="recap-banner"><span>Your <b>${esc(fmtMonthLong(last))}</b> recap is ready</span>
+      <span class="row"><button type="button" class="btn sm primary" data-action="see-recap">See it</button>
+      <button type="button" class="icon" data-action="dismiss-recap" aria-label="Dismiss">&times;</button></span></div>`;
+  }
+
+  function renderRecap() {
+    const m = recapMonth || B.shiftMonth(thisMonth(), -1);
+    const r = B.recap(budget, m);
+    const [y] = m.split('-');
+    const sk = B.streaks(budget, m);
+    const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+    const saveRate = pct(r.saved, r.income);
+    const vsBefore = r.spendingBefore ? r.spending - r.spendingBefore : null;
+    const names = Object.fromEntries(budget.envelopes.map((e) => [e.id, e.name]));
+    const prevM = B.shiftMonth(m, -1);
+    const nextM = B.shiftMonth(m, 1);
+    $('#recap').innerHTML = `<div class="recap">
+      <section class="card hero-card">
+        <div class="row" style="justify-content:space-between">
+          <h2>Monthly recap</h2>
+          <span class="row"><button type="button" class="btn sm" data-action="recap-month" data-month="${prevM}">‹ ${esc(fmtMonth(prevM))}</button>
+          ${nextM < thisMonth() ? `<button type="button" class="btn sm" data-action="recap-month" data-month="${nextM}">${esc(fmtMonth(nextM))} ›</button>` : ''}</span>
+        </div>
+        <div class="recap-title">${esc(fmtMonthLong(m))} ${esc(y)}</div>
+        <p style="font-weight:800;font-size:18px;margin:0">${r.saved >= 0
+          ? `You kept ${esc(money(r.saved))}${r.income ? `, ${saveRate}% of what came in` : ''}.`
+          : `You spent ${esc(money(-r.saved))} more than came in.`}</p>
+      </section>
+      <section class="card recap-yellow"><h2>Came in</h2><div class="recap-big">${esc(money(r.income))}</div></section>
+      <section class="card"><h2>Went out</h2><div class="recap-big">${esc(money(r.spending))}</div>
+        ${vsBefore === null ? '' : `<p class="hint">${vsBefore <= 0 ? `${esc(money(-vsBefore))} less` : `${esc(money(vsBefore))} more`} than ${esc(fmtMonthLong(prevM))}</p>`}</section>
+      <section class="card recap-lilac"><h2>Net worth</h2><div class="recap-big">${esc(money(r.netWorth))}</div>
+        <p>${r.netWorthChange >= 0 ? '▲' : '▼'} ${esc(money(Math.abs(r.netWorthChange)))} this month</p></section>
+      <section class="card wide recap-over"><h2>Overspent</h2>
+        ${r.overspent.length ? `<ul class="insight-list">${r.overspent.map((o) => `<li><span><b>${esc(o.name)}</b>
+          <span class="hint">${o.carried ? 'carried into next month' : 'taken from next month\'s Ready to Assign'}</span></span>
+          <span class="chip neg">${esc(money(-o.amount))}</span></li>`).join('')}</ul>
+          <p class="hint">Total ${esc(money(r.overspent.reduce((t, o) => t + o.amount, 0)))}.</p>`
+          : '<p class="status good">✓ Nothing was overspent</p><p>Every envelope stayed within what it had. 🎉</p>'}
+        ${r.hints.map((h) => `<div class="hint-box"><span><b>${esc(h.name)}</b> was overspent in ${h.months} of the last 4 months.
+          Raise its target to <b>${esc(money(h.suggest))}</b> a month?</span>
+          <button type="button" class="btn sm" data-action="apply-hint" data-id="${h.id}" data-amount="${h.suggest}">Set ${esc(money(h.suggest))}/month</button></div>`).join('')}
+      </section>
+      <section class="card wide"><h2>Where it went</h2>
+        ${r.top.length ? `<ul class="insight-list">${r.top.map((t) => `<li class="row" style="justify-content:space-between"><b>${esc(t.name)}</b>
+          <span>${esc(money(t.amount))}${t.before ? ` <span class="hint">(${t.amount > t.before ? '▲' : '▼'} ${esc(money(Math.abs(t.amount - t.before)))})</span>` : ''}</span></li>`).join('')}</ul>` : '<p class="hint">No spending this month.</p>'}
+        ${r.biggest ? `<p class="hint">Biggest purchase: <b>${esc(r.biggest.payee || 'Unnamed')}</b>, ${esc(money(r.biggest.amount))} on ${esc(r.biggest.date)}${r.biggest.envelopeId ? ` (${esc(names[r.biggest.envelopeId] || '')})` : ''}.</p>` : ''}
+      </section>
+      ${r.goals.length ? `<section class="card full recap-mint"><h2>Goals</h2><ul class="insight-list">${r.goals.map((g) => `<li class="row" style="justify-content:space-between">
+        <b>${esc(g.name)}</b><span>${Math.round(g.progress * 100)}% · ${g.change >= 0 ? '▲' : '▼'} ${esc(money(Math.abs(g.change)))}</span></li>`).join('')}</ul></section>` : ''}
+      <section class="card full"><h2>Streaks</h2>
+        <div class="row" style="gap:28px">
+          <div><div class="recap-big">${sk.allAssigned}</div><p class="hint">month${sk.allAssigned === 1 ? '' : 's'} with every ${esc(currencyWord())} assigned</p></div>
+          <div><div class="recap-big">${sk.noOverspending}</div><p class="hint">month${sk.noOverspending === 1 ? '' : 's'} without overspending</p></div>
+          <div><div class="recap-big">${sk.saving}</div><p class="hint">month${sk.saving === 1 ? '' : 's'} spending less than you earn</p></div>
+          <div><div class="recap-big">${r.transactions}</div><p class="hint">transactions recorded</p></div>
+        </div>
+      </section>
+    </div>`;
+  }
 
   // Goals
 
@@ -1481,6 +2623,7 @@
         for (const [goal, s2] of fresh) goal.celebrated = s2.milestone;
         scheduleSave();
         celebrate(st.milestone === 100 ? `🎉 You reached ${g.name}!` : `🎉 ${g.name} is ${st.milestone}% there`);
+        Sounds.play(st.milestone === 100 ? 'bigFanfare' : 'chime');
       }
     }
   }
@@ -1994,6 +3137,12 @@
   fetch('/api/version').then((r) => r.json()).then((v) => {
     $('#version').textContent = `Envelo ${v.version}`;
   }).catch(() => {});
+
+  // Installable app: the service worker keeps it working offline. Browsers
+  // only allow it over HTTPS (or on localhost).
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
 
   // Start: restore the session if there is one.
   (async function boot() {

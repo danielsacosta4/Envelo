@@ -11,6 +11,8 @@ const http = require('node:http');
 const path = require('node:path');
 const { importActualZip } = require('./actual-import.js');
 const Budget = require('../src/budget.js');
+const store = require('./secure-store.js');
+const totp = require('./totp.js');
 
 // Version from package.json, shown by `update` and the app.
 const VERSION = (() => {
@@ -25,6 +27,9 @@ const COOKIE = 'envelo_session';
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
+const MAX_RECEIPT_BYTES = 3 * 1024 * 1024;
+const RECEIPT_TYPES = { 'image/webp': 'webp', 'image/jpeg': 'jpg', 'image/png': 'png' };
+const RECOVERY_CODES = 10;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 10;
 const BACKUPS_KEPT = 14;
@@ -37,11 +42,16 @@ const CONTENT_TYPES = {
   '.js': 'text/javascript; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.woff2': 'font/woff2',
+  '.webmanifest': 'application/manifest+json',
+  '.txt': 'text/plain; charset=utf-8',
 };
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'no-referrer',
+  'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
 };
 
 class HttpError extends Error {
@@ -79,12 +89,32 @@ function parseCookies(header) {
   return out;
 }
 
-function createApp({ dataDir, publicDir, secureCookies = false }) {
+function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
   fs.mkdirSync(dataDir, { recursive: true });
   const dbFile = path.join(dataDir, 'db.json');
-  const db = fs.existsSync(dbFile)
-    ? JSON.parse(fs.readFileSync(dbFile, 'utf8'))
-    : { users: {}, budgets: {}, sessions: {} };
+  // The encryption key lives outside the data folder when the installer set
+  // one up; otherwise it is created next to the data.
+  const localKey = path.join(dataDir, 'secret.key');
+  const key = store.loadKey(keyFile || localKey, keyFile ? localKey : null);
+  let db = { users: {}, budgets: {}, sessions: {} };
+  if (fs.existsSync(dbFile)) {
+    let text;
+    try {
+      text = store.decrypt(key, fs.readFileSync(dbFile)).toString('utf8');
+    } catch {
+      throw new Error(`Cannot decrypt ${dbFile}: the encryption key does not match. Check KEY_FILE (${keyFile || localKey}).`);
+    }
+    db = JSON.parse(text);
+  }
+  const receiptsDir = path.join(dataDir, 'receipts');
+  // Local admin commands (`envelo reset-password ...`) prove themselves with
+  // this token, which only root and the service can read.
+  const adminToken = crypto.randomBytes(24).toString('hex');
+  try {
+    fs.writeFileSync(path.join(dataDir, 'admin.token'), adminToken, { mode: 0o600 });
+  } catch (err) {
+    console.error('Could not write the admin token:', err.message);
+  }
   if (!Array.isArray(db.shares)) db.shares = [];
   const failures = new Map(); // ip -> { count, since }
 
@@ -159,7 +189,7 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
       if (s.expires < now) delete db.sessions[key];
     }
     const tmp = `${dbFile}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(db), { mode: 0o600 });
+    fs.writeFileSync(tmp, store.encrypt(key, Buffer.from(JSON.stringify(db))), { mode: 0o600 });
     fs.renameSync(tmp, dbFile);
     backupDaily();
   }
@@ -259,6 +289,73 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
     return user;
   }
 
+  function userOut(user) {
+    return { email: user.email, twofa: !!user.totp, recoveryLeft: user.totp ? (user.recovery || []).length : 0 };
+  }
+
+  function currentToken(req) {
+    const token = parseCookies(req.headers.cookie)[COOKIE];
+    return token ? sha256(token) : null;
+  }
+
+  function endSessions(email, exceptKey = null) {
+    for (const [k, sess] of Object.entries(db.sessions)) {
+      if (sess.email === email && k !== exceptKey) delete db.sessions[k];
+    }
+  }
+
+  function validPassword(password) {
+    if (typeof password !== 'string' || password.length < 8 || password.length > 200) {
+      throw new HttpError(400, 'Password must be 8 to 200 characters.');
+    }
+  }
+
+  function setPassword(user, password) {
+    validPassword(password);
+    user.salt = crypto.randomBytes(16).toString('hex');
+    user.hash = hashPassword(password, user.salt);
+    delete user.mustChangePassword;
+  }
+
+  function newRecoveryCodes(user) {
+    const codes = [];
+    for (let i = 0; i < RECOVERY_CODES; i++) {
+      const c = crypto.randomBytes(5).toString('hex').toUpperCase();
+      codes.push(`${c.slice(0, 5)}-${c.slice(5)}`);
+    }
+    user.recovery = codes.map((c) => sha256(c));
+    return codes;
+  }
+
+  // A 6-digit code from the app, or an unused recovery code (used up).
+  function checkSecondFactor(user, code) {
+    const clean = String(code || '').trim().toUpperCase();
+    const step = totp.verify(user.totp, clean, { lastStep: user.totpLastStep || -1 });
+    if (step >= 0) {
+      user.totpLastStep = step;
+      return true;
+    }
+    const hashed = sha256(clean.replace(/\s/g, ''));
+    const i = (user.recovery || []).indexOf(hashed);
+    if (i >= 0) {
+      user.recovery.splice(i, 1);
+      return true;
+    }
+    return false;
+  }
+
+  function receiptDir(email) {
+    return path.join(receiptsDir, sha256(email).slice(0, 32));
+  }
+
+  function removeUser(email) {
+    delete db.users[email];
+    delete db.budgets[email];
+    endSessions(email);
+    db.shares = db.shares.filter((sh) => sh.owner !== email && sh.member !== email);
+    fs.rmSync(receiptDir(email), { recursive: true, force: true });
+  }
+
   function startSession(res, email) {
     const token = crypto.randomBytes(32).toString('base64url');
     db.sessions[sha256(token)] = { email, expires: Date.now() + SESSION_MS };
@@ -302,13 +399,15 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
       db.users[email] = { email, salt, hash: hashPassword(password, salt), createdAt: new Date().toISOString() };
       const cookie = startSession(res, email);
       persist();
-      return sendJson(res, 201, { user: { email } }, { 'Set-Cookie': cookie });
+      return sendJson(res, 201, { user: userOut(db.users[email]) }, { 'Set-Cookie': cookie });
     }
 
     if (req.method === 'POST' && pathname === '/api/login') {
       const ip = req.socket.remoteAddress || 'unknown';
       if (rateLimited(ip)) throw new HttpError(429, 'Too many attempts. Try again in a few minutes.');
-      const { email, password } = credentials(await readJson(req));
+      const body = await readJson(req);
+      req.body = body;
+      const { email, password } = credentials(body);
       const user = db.users[email];
       // Always hash, so unknown emails take as long as wrong passwords.
       const ok = user
@@ -318,10 +417,26 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
         recordFailure(ip);
         throw new HttpError(401, 'Email or password is wrong.');
       }
+      // Two-step sign-in: the password was right, now the code is needed.
+      if (user.totp) {
+        const body = req.body || {};
+        if (!body.code) return sendJson(res, 401, { error: 'Enter the code from your authenticator app.', needCode: true });
+        if (!checkSecondFactor(user, body.code)) {
+          recordFailure(ip);
+          persist();
+          return sendJson(res, 401, { error: 'That code is not right. Try the newest one.', needCode: true });
+        }
+      }
+      // After an admin reset, a new password must be chosen before going on.
+      if (user.mustChangePassword) {
+        const body = req.body || {};
+        if (!body.newPassword) return sendJson(res, 403, { error: 'Choose a new password.', needNewPassword: true });
+        setPassword(user, body.newPassword);
+      }
       failures.delete(ip);
       const cookie = startSession(res, email);
       persist();
-      return sendJson(res, 200, { user: { email } }, { 'Set-Cookie': cookie });
+      return sendJson(res, 200, { user: userOut(user) }, { 'Set-Cookie': cookie });
     }
 
     if (req.method === 'POST' && pathname === '/api/logout') {
@@ -339,7 +454,7 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
 
     if (req.method === 'GET' && pathname === '/api/me') {
       const user = requireUser(req);
-      return sendJson(res, 200, { user: { email: user.email } });
+      return sendJson(res, 200, { user: userOut(user) });
     }
 
     if (req.method === 'GET' && pathname === '/api/budget') {
@@ -375,6 +490,146 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
       persist();
       announceBudget(user.email, revision, req.headers['x-client-id']);
       return sendJson(res, 200, { savedAt, revision });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/password') {
+      const user = requireUser(req);
+      const body = await readJson(req);
+      if (!checkPassword(String(body?.current || ''), user)) throw new HttpError(403, 'Your current password is not right.');
+      setPassword(user, body?.next);
+      // Other devices must sign in again with the new password.
+      endSessions(user.email, currentToken(req));
+      persist();
+      return sendJson(res, 200, { ok: true });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/account/delete') {
+      const user = requireUser(req);
+      const body = await readJson(req);
+      if (!checkPassword(String(body?.password || ''), user)) throw new HttpError(403, 'Your password is not right.');
+      removeUser(user.email);
+      persist();
+      return sendJson(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie('', 0) });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/2fa/setup') {
+      const user = requireUser(req);
+      if (user.totp) throw new HttpError(409, 'Two-step sign-in is already on.');
+      user.totpPending = totp.newSecret();
+      persist();
+      return sendJson(res, 200, { secret: user.totpPending, uri: totp.otpauthUri(user.totpPending, user.email) });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/2fa/enable') {
+      const user = requireUser(req);
+      const body = await readJson(req);
+      if (!user.totpPending) throw new HttpError(400, 'Start the setup again.');
+      const step = totp.verify(user.totpPending, body?.code);
+      if (step < 0) throw new HttpError(400, 'That code is not right. Check the time on your phone and try the newest code.');
+      user.totp = user.totpPending;
+      user.totpLastStep = step;
+      delete user.totpPending;
+      const codes = newRecoveryCodes(user);
+      persist();
+      return sendJson(res, 200, { recoveryCodes: codes, user: userOut(user) });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/2fa/disable') {
+      const user = requireUser(req);
+      const body = await readJson(req);
+      if (!checkPassword(String(body?.password || ''), user)) throw new HttpError(403, 'Your password is not right.');
+      delete user.totp;
+      delete user.totpLastStep;
+      delete user.recovery;
+      persist();
+      return sendJson(res, 200, { user: userOut(user) });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/2fa/recovery') {
+      const user = requireUser(req);
+      const body = await readJson(req);
+      if (!user.totp) throw new HttpError(400, 'Two-step sign-in is off.');
+      if (!checkPassword(String(body?.password || ''), user)) throw new HttpError(403, 'Your password is not right.');
+      const codes = newRecoveryCodes(user);
+      persist();
+      return sendJson(res, 200, { recoveryCodes: codes, user: userOut(user) });
+    }
+
+    // Receipts: stored encrypted, one folder per user.
+    if (req.method === 'POST' && pathname === '/api/receipts') {
+      const user = requireUser(req);
+      const type = String(req.headers['content-type'] || '').split(';')[0].trim();
+      if (!RECEIPT_TYPES[type]) throw new HttpError(415, 'Receipts must be WebP, JPEG or PNG images.');
+      const bytes = await readRaw(req, MAX_RECEIPT_BYTES);
+      if (!bytes.length) throw new HttpError(400, 'The photo is empty.');
+      const id = crypto.randomUUID();
+      const dir = receiptDir(user.email);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const payload = Buffer.concat([Buffer.from(`${type}\n`), bytes]);
+      fs.writeFileSync(path.join(dir, `${id}.bin`), store.encrypt(key, payload), { mode: 0o600 });
+      return sendJson(res, 201, { id });
+    }
+
+    const receiptMatch = pathname.match(/^\/api\/receipts\/([0-9a-f-]{36})$/);
+    if (receiptMatch) {
+      const user = requireUser(req);
+      const file = path.join(receiptDir(user.email), `${receiptMatch[1]}.bin`);
+      if (!fs.existsSync(file)) throw new HttpError(404, 'Receipt not found.');
+      if (req.method === 'DELETE') {
+        fs.rmSync(file, { force: true });
+        return sendJson(res, 200, { ok: true });
+      }
+      if (req.method === 'GET') {
+        const plain = store.decrypt(key, fs.readFileSync(file));
+        const nl = plain.indexOf(10);
+        const type = plain.subarray(0, nl).toString('utf8');
+        const body = plain.subarray(nl + 1);
+        res.writeHead(200, {
+          'Content-Type': RECEIPT_TYPES[type] ? type : 'application/octet-stream',
+          'Content-Length': body.length,
+          'Cache-Control': 'private, max-age=86400',
+          ...SECURITY_HEADERS,
+        });
+        return res.end(body);
+      }
+    }
+
+    // Admin commands from the `envelo` tool on the server itself.
+    if (req.method === 'POST' && pathname.startsWith('/api/admin/')) {
+      const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+      const given = String(req.headers['x-admin-token'] || '');
+      if (!local || given.length !== adminToken.length || !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(adminToken))) {
+        throw new HttpError(403, 'Not allowed.');
+      }
+      const body = await readJson(req);
+      if (pathname === '/api/admin/users') {
+        return sendJson(res, 200, { users: Object.values(db.users).map((u) => ({ email: u.email, createdAt: u.createdAt, twofa: !!u.totp })) });
+      }
+      const email = String(body?.email || '').trim().toLowerCase();
+      const user = db.users[email];
+      if (!user) throw new HttpError(404, `No account for ${email}.`);
+      if (pathname === '/api/admin/reset-password') {
+        const temp = crypto.randomBytes(9).toString('base64url');
+        setPassword(user, temp);
+        user.mustChangePassword = true;
+        endSessions(email);
+        persist();
+        return sendJson(res, 200, { email, temporaryPassword: temp });
+      }
+      if (pathname === '/api/admin/reset-2fa') {
+        delete user.totp;
+        delete user.totpLastStep;
+        delete user.recovery;
+        delete user.totpPending;
+        persist();
+        return sendJson(res, 200, { email });
+      }
+      if (pathname === '/api/admin/delete-user') {
+        removeUser(email);
+        persist();
+        return sendJson(res, 200, { email });
+      }
+      throw new HttpError(404, 'Unknown command.');
     }
 
     if (req.method === 'GET' && pathname === '/api/events') {
@@ -507,7 +762,10 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
   }
 
   function serveStatic(req, res, pathname) {
-    const requested = pathname === '/' ? '/index.html' : pathname;
+    // The installable-app files live in src/ but must be served from the root
+    // so the service worker can look after the whole app.
+    const ROOT_FILES = { '/': '/index.html', '/manifest.webmanifest': '/src/manifest.webmanifest', '/sw.js': '/src/sw.js' };
+    const requested = ROOT_FILES[pathname] || pathname;
     // Only the app is public: index.html and files under src/.
     if (requested !== '/index.html' && !requested.startsWith('/src/')) {
       res.writeHead(404, SECURITY_HEADERS).end('Not found');
@@ -519,7 +777,8 @@ function createApp({ dataDir, publicDir, secureCookies = false }) {
       return;
     }
     const type = CONTENT_TYPES[path.extname(file)] || 'application/octet-stream';
-    res.writeHead(200, { 'Content-Type': type, ...SECURITY_HEADERS, 'Cache-Control': 'no-cache' });
+    const extra = pathname === '/sw.js' ? { 'Service-Worker-Allowed': '/' } : {};
+    res.writeHead(200, { 'Content-Type': type, ...SECURITY_HEADERS, 'Cache-Control': 'no-cache', ...extra });
     if (req.method === 'HEAD') return res.end();
     fs.createReadStream(file).pipe(res);
   }
@@ -558,6 +817,7 @@ if (require.main === module) {
     dataDir: process.env.DATA_DIR || path.join(root, 'data'),
     publicDir: root,
     secureCookies: process.env.SECURE_COOKIES === '1',
+    keyFile: process.env.KEY_FILE || undefined,
   });
   const port = Number(process.env.PORT || 3000);
   const host = process.env.HOST || '0.0.0.0';

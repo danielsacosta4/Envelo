@@ -11,6 +11,9 @@
 # Any value can be preset with an environment variable, for example:
 #   CTID=120 PORT=8080 bash -c "$(curl -fsSL ...)"
 #
+# A test container for an unreleased branch, next to your real one:
+#   REF=some-branch HOSTNAME_CT=envelo-test bash -c "$(curl -fsSL ...)"
+#
 # Private repository: set GITHUB_TOKEN to a token that can read the repo.
 set -Eeuo pipefail
 
@@ -112,7 +115,11 @@ if [[ "$MODE" == "advanced" ]]; then
   STORAGE="$(ask "Storage for the container disk" "$STORAGE")"
   BRIDGE="$(ask "Network bridge (DHCP)" "$BRIDGE")"
   PORT="$(ask "Port for the Envelo web app" "$PORT")"
+  REF="$(ask "Branch to install (main is the released version)" "$REF")"
 fi
+
+# The branch may have changed in the menu.
+RAW="https://raw.githubusercontent.com/$REPO/$REF/scripts/install"
 
 is_number "$CTID" || die "Container ID must be a number."
 is_number "$CORES" || die "CPU cores must be a number."
