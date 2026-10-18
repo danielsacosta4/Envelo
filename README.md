@@ -52,13 +52,15 @@ The screenshots use a made-up household budget.
   them from Ready to Assign.
 - Accounts with starting balances, transfers between accounts, and
   reconciling against your bank balance.
-- Recurring transactions (weekly, every 2 weeks, monthly, yearly), created
-  automatically when due.
+- Future transactions: give one a later date and it waits under "Coming up"
+  until its day, without touching balances. Recurring transactions (weekly,
+  every 2 weeks, monthly, yearly) are created automatically when due.
 - Reports: income vs spending, spending by group, net worth over time and top
   envelopes as charts; a month-end forecast at the current pace; when each
   savings target will be reached; and the full table per envelope and month.
 - Account pages: every transaction in an account with a running balance,
   search and date filters.
+- Sub-envelopes inside an envelope, and reorder groups and envelopes.
 - Hide envelopes or whole groups, collapse groups, choose the row size, and
   print a month's budget.
 - Targets show a coloured progress bar and a green, amber or orange outline
@@ -82,7 +84,7 @@ The screenshots use a made-up household budget.
 - Split transactions, move money between envelopes, cover overspending in a
   click, payee memory, search across every transaction, undo (Ctrl+Z) and
   keyboard shortcuts (press ? to see them).
-- Receipt photos on transactions, stored as WebP and encrypted.
+- Attach a receipt photo (stored as WebP) or a PDF to any transaction, kept encrypted.
 - A monthly recap (including what was overspent and envelopes that keep
   running short), streaks, and a setup guide for new budgets.
 - Poster design with 16 group colours, three fonts, sounds (off by default)

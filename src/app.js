@@ -396,6 +396,7 @@
     try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...list])); } catch { /* still toggles until reload */ }
   }
   let showHidden = false;
+  let reordering = false; // Reorder mode: arrows on groups and envelopes
 
   // Funding state of an envelope with a target: full, partial or none.
   function fundState(e) {
@@ -426,6 +427,22 @@
     return `<span class="chip ${cls}">${esc(money(e.available))}</span>`;
   }
 
+  // Sub-envelopes sit right under their parent. Returns rows in display order,
+  // each with `kids` (on a parent) for its summary line.
+  function familyOrder(list) {
+    const ids = new Set(list.map((e) => e.id));
+    const out = [];
+    for (const e of list) {
+      if (e.parentId && ids.has(e.parentId)) continue;
+      const kids = list.filter((c) => c.parentId === e.id);
+      out.push({ ...e, kids, isSub: false }, ...kids.map((c) => ({ ...c, isSub: true })));
+    }
+    return out;
+  }
+  function moveButtons(action, attr, label) {
+    return `<span class="mover"><button type="button" class="icon-text" data-action="${action}" ${attr} data-dir="-1" aria-label="Move ${esc(label)} up" title="Move up">▲</button><button type="button" class="icon-text" data-action="${action}" ${attr} data-dir="1" aria-label="Move ${esc(label)} down" title="Move down">▼</button></span>`;
+  }
+
   function envelopeRow(e, isHiddenRow = false) {
     const state = fundState(e);
     const pct = Math.round((e.progress || 0) * 100);
@@ -441,14 +458,19 @@
         ? `<button type="button" class="btn sm fund" data-action="fund" data-id="${e.id}" data-amount="${e.needed}">Assign ${esc(money(e.needed))}</button>`
         : e.target ? '<span class="stamp done">Funded ✓</span>' : '';
     const { text } = splitEmoji(e.name);
-    return `<div class="env" data-env-row="${e.id}">
+    const kids = e.kids || [];
+    const family = kids.length
+      ? `<div class="family">${kids.length} inside · ${esc(money(kids.reduce((t, c) => t + c.available, e.available)))} available in all</div>`
+      : '';
+    const cell = reordering && !isHiddenRow ? moveButtons('move-env', `data-id="${e.id}"`, text) : fund;
+    return `<div class="env${e.isSub ? ' sub' : ''}${kids.length ? ' parent' : ''}" data-env-row="${e.id}">
       <div class="env-cell">${tile(e.name)}<div class="env-text">
         <div class="env-name"><button type="button" class="env-link" data-action="edit-target" data-id="${e.id}" title="Edit envelope and target">${esc(text)}</button>${e.overspent ? '<span class="stamp over">Overspent</span>' : ''}${shared ? '<span class="stamp shared" title="Shared with someone">Shared</span>' : ''}</div>
-        ${goal}</div></div>
+        ${goal}${family}</div></div>
       <div class="c" data-label="Assigned"><input type="text" inputmode="decimal" class="amt ${state}" aria-label="Assigned to ${esc(e.name)}" value="${B.toInput(e.assigned)}" data-env="${e.id}"></div>
       <div class="c spent" data-label="Spent">${esc(money(e.activity))}</div>
       <div class="c" data-label="Available">${chip(e)}</div>
-      <div class="c fund-cell">${fund}</div>
+      <div class="c fund-cell">${cell}</div>
     </div>`;
   }
 
@@ -466,9 +488,10 @@
         <div class="tot">${esc(money(sum('assigned')))}</div>
         <div class="tot">${esc(money(sum('activity')))}</div>
         <div class="tot tot-avail ${availSum < 0 ? 'neg' : ''}">${esc(money(availSum))}</div>
-        <div class="g-act"><button type="button" class="icon-text" data-action="hide-group" data-group="${esc(g.name)}" title="Hide this group">Hide</button></div>
+        <div class="g-act">${reordering ? moveButtons('move-group', `data-group="${esc(g.name)}"`, g.name)
+          : `<button type="button" class="icon-text" data-action="new-envelope" data-group="${esc(g.name)}" title="Add an envelope to this group" aria-label="Add an envelope to ${esc(g.name)}">+</button><button type="button" class="icon-text" data-action="hide-group" data-group="${esc(g.name)}" title="Hide this group">Hide</button>`}</div>
       </div>
-      ${visible.map((e) => envelopeRow(e)).join('')}
+      ${familyOrder(visible).map((e) => envelopeRow(e)).join('')}
     </section>`;
   }
 
@@ -567,6 +590,10 @@
       </section>`);
     }
     $('#envelope-rows').innerHTML = parts.join('');
+    $('#envelope-rows').classList.toggle('reordering', reordering);
+    $('#reorder-btn').setAttribute('aria-pressed', String(reordering));
+    $('#reorder-btn').textContent = reordering ? 'Done' : 'Reorder';
+    $('#reorder-btn').classList.toggle('primary', reordering);
     $('#empty').hidden = budget.envelopes.length > 0;
     renderSideCards();
     renderRecapBanner();
@@ -575,6 +602,7 @@
   // Latest transactions, the closest goal and the biggest loan, at a glance.
   function renderSideCards() {
     renderTransactions();
+    renderUpcomingCard();
     const goals = (budget.goals || []).map((g) => [g, B.goalStatus(budget, g, month, 2)]).filter(([, st]) => st.remaining > 0)
       .sort((x, y) => y[1].progress - x[1].progress);
     $('#side-goal').innerHTML = goals.length ? (() => {
@@ -727,20 +755,95 @@
   }
 
   const FREQ_LABEL = { weekly: 'week', monthly: 'month', yearly: 'year' };
-  function renderRecurring() {
-    const rules = budget.recurring || [];
-    const names = Object.fromEntries(budget.envelopes.map((e) => [e.id, e.name]));
-    $('#recurring-list').innerHTML = rules.length ? rules.map((r) => {
-      const every = r.every === 1 ? `Every ${FREQ_LABEL[r.freq]}` : `Every ${r.every} ${FREQ_LABEL[r.freq]}s`;
-      const where = r.kind === 'spend' ? names[r.envelopeId] || 'Deleted envelope' : 'Income';
-      return `<li>
-        <div class="tx-meta">${esc(every)} · next ${esc(r.next)} · ${esc(where)}</div>
-        <div><strong>${esc(r.payee || (r.kind === 'spend' ? 'Spending' : 'Income'))}</strong></div>
-        <div class="tx-amt ${r.kind === 'income' ? 'in' : ''}">${r.kind === 'income' ? '+' : '-'}${esc(money(r.amount))}</div>
-        <button type="button" class="icon tx-del" data-action="remove-recurring" data-id="${r.id}" aria-label="Stop repeating">&times;</button>
-      </li>`;
-    }).join('') : '<li class="tx-meta">Nothing repeats yet.</li>';
+  function ruleWhen(r) {
+    if (r.freq === 'once') return `On ${fmtDay(r.next)}`;
+    const every = r.every === 1 ? `Every ${FREQ_LABEL[r.freq]}` : `Every ${r.every} ${FREQ_LABEL[r.freq]}s`;
+    return `${every} · next ${fmtDay(r.next)}`;
   }
+  function ruleWhere(r) {
+    if (r.kind === 'income') return 'Income';
+    const acct = (id) => (budget.accounts.find((a) => a.id === id) || {}).name || 'an account';
+    if (r.kind === 'transfer') return `Transfer to ${acct(r.toAccountId)}`;
+    const env = budget.envelopes.find((e) => e.id === r.envelopeId);
+    return env ? env.name : 'No envelope';
+  }
+  function ruleRow(r, date = r.next) {
+    const sign = r.kind === 'income' ? '+' : '-';
+    return `<li class="upcoming-row">
+      <div class="tx-main"><button type="button" class="env-link" data-action="edit-rule" data-id="${r.id}">${esc(r.payee || (r.kind === 'income' ? 'Income' : r.kind === 'transfer' ? 'Transfer' : 'Spending'))}</button>${r.receiptId ? ` ${r.receiptType === 'pdf' ? '📄' : '📎'}` : ''}
+        <div class="tx-meta">${esc(r.freq === 'once' || date !== r.next ? fmtDay(date) : ruleWhen(r))}${r.freq === 'once' ? '' : ' · repeats'} · ${esc(ruleWhere(r))}</div></div>
+      <div class="tx-amt ${r.kind === 'income' ? 'in' : ''}">${sign}${esc(money(r.amount))}</div>
+      <button type="button" class="icon tx-del" data-action="remove-recurring" data-id="${r.id}" aria-label="${r.freq === 'once' ? 'Cancel this scheduled transaction' : 'Stop repeating'}">&times;</button>
+    </li>`;
+  }
+  function renderRecurring() {
+    const rules = [...(budget.recurring || [])].sort((x, y) => (x.next < y.next ? -1 : x.next > y.next ? 1 : 0));
+    $('#recurring-list').innerHTML = rules.length ? rules.map((r) => ruleRow(r)).join('') : '<li class="tx-meta">Nothing coming up.</li>';
+  }
+  // The next 30 days on the budget page.
+  function renderUpcomingCard() {
+    const from = todayISO();
+    const d = new Date(`${from}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 30);
+    const items = B.upcoming(budget, from, d.toISOString().slice(0, 10));
+    if (!items.length) { $('#side-upcoming').innerHTML = ''; return; }
+    const inSum = items.filter((u) => u.kind === 'income').reduce((t, u) => t + u.amount, 0);
+    const outSum = items.filter((u) => u.kind === 'spend').reduce((t, u) => t - u.amount, 0);
+    const rules = new Map((budget.recurring || []).map((r) => [r.id, r]));
+    $('#side-upcoming').innerHTML = `<section class="card side-card side-upcoming">
+      <div class="card-head"><h2>Coming up</h2><span class="hint">next 30 days</span></div>
+      <p class="upcoming-sum">${inSum ? `<span class="in">+${esc(money(inSum))} in</span>` : ''}${outSum ? `<span>−${esc(money(outSum))} out</span>` : ''}</p>
+      <ul class="tx-list">${items.slice(0, 5).map((u) => ruleRow(rules.get(u.ruleId), u.date)).join('')}</ul>
+      ${items.length > 5 ? `<button type="button" class="link" data-view="accounts">All ${items.length} coming up →</button>` : ''}
+    </section>`;
+  }
+
+  // The drawer, filled from a scheduled or repeating transaction.
+  function editRule(id) {
+    const r = (budget.recurring || []).find((x) => x.id === id);
+    if (!r) return;
+    openTx();
+    editingRule = r.id;
+    const f = $('#tx-form');
+    f.querySelector(`input[name="kind"][value="${r.kind}"]`).checked = true;
+    f.date.value = r.next;
+    f.payee.value = r.payee || '';
+    f.amount.value = B.toInput(r.amount);
+    f.note.value = r.note || '';
+    f.accountId.value = r.accountId;
+    if (r.envelopeId) f.envelopeId.value = r.envelopeId;
+    if (r.toAccountId) f.toAccountId.value = r.toAccountId;
+    f.repeat.value = r.freq === 'once' ? '' : r.freq === 'weekly' && r.every === 2 ? 'biweekly' : r.freq;
+    envTouched = true;
+    receiptKeep = r.receiptId ? { id: r.receiptId, type: r.receiptType || null, name: r.receiptName || null } : null;
+    showReceiptPreview(receiptKeep ? { url: `/api/receipts/${encodeURIComponent(receiptKeep.id)}`, kind: receiptKeep.type === 'pdf' ? 'pdf' : 'image', name: receiptKeep.name } : null);
+    $('#tx-heading').textContent = r.freq === 'once' ? 'Scheduled transaction' : 'Repeating transaction';
+    $('#tx-submit').textContent = 'Update';
+    $('#tx-delete').textContent = r.freq === 'once' ? 'Cancel this scheduled transaction' : 'Stop repeating';
+    $('#tx-delete').hidden = false;
+    syncKind();
+    syncFutureHint();
+  }
+
+  // Under the date: what happens with a date in the future.
+  function syncFutureHint() {
+    const f = $('#tx-form');
+    const hint = $('#tx-future-hint');
+    const future = f.date.value > todayISO();
+    if (editingTx) { hint.hidden = true; return; }
+    if (f.repeat.value) {
+      hint.textContent = future ? `First one on ${fmtDay(f.date.value)}, then it repeats.` : 'Added now, then it repeats.';
+      hint.hidden = false;
+    } else if (future) {
+      hint.textContent = `Scheduled: added on ${fmtDay(f.date.value)}. Until then it waits under Coming up and does not touch balances or envelopes.`;
+      hint.hidden = false;
+    } else {
+      hint.hidden = true;
+    }
+  }
+  $('#tx-form').date.addEventListener('change', syncFutureHint);
+  $('#tx-form').date.addEventListener('input', syncFutureHint);
+  $('#tx-form').repeat.addEventListener('change', syncFutureHint);
 
   // Chart colours: the validated categorical order, read from CSS so light
   // and dark themes use their own steps.
@@ -887,8 +990,6 @@
       if (budget.accounts.some((a) => a.id === keep)) el.value = keep;
     }
 
-    const groups = [...new Set(budget.envelopes.map((e) => e.group))];
-    $('#group-list').innerHTML = groups.map((g) => `<option value="${esc(g)}">`).join('');
     $('#payee-list').innerHTML = B.payees(budget).slice(0, 300).map((p) => `<option value="${esc(p)}">`).join('');
   }
 
@@ -901,7 +1002,8 @@
         if (seen.has(t.splitId)) continue;
         seen.add(t.splitId);
         const legs = txs.filter((x) => x.splitId === t.splitId);
-        out.push({ ...t, amount: legs.reduce((sum, l) => sum + l.amount, 0), legs, receiptId: legs.map((l) => l.receiptId).find(Boolean) });
+        const withFile = legs.find((l) => l.receiptId);
+        out.push({ ...t, amount: legs.reduce((sum, l) => sum + l.amount, 0), legs, receiptId: withFile ? withFile.receiptId : undefined, receiptType: withFile ? withFile.receiptType : undefined });
       } else out.push(t);
     }
     return out;
@@ -910,7 +1012,11 @@
     : t.envelopeId ? names[t.envelopeId] || 'Deleted envelope'
     : t.transferId ? 'Transfer'
     : B.isOnBudget(budget, t.accountId) ? 'Ready to Assign' : 'Off budget');
-  const receiptBtn = (t) => (t.receiptId ? `<button type="button" class="receipt-btn" data-action="view-receipt" data-id="${esc(t.receiptId)}" data-tx="${t.id}" title="See the receipt" aria-label="See the receipt">📎</button>` : '');
+  const receiptBtn = (t) => {
+    if (!t.receiptId) return '';
+    const pdf = t.receiptType === 'pdf';
+    return `<button type="button" class="receipt-btn" data-action="view-receipt" data-id="${esc(t.receiptId)}" data-tx="${t.id}"${pdf ? ' data-type="pdf"' : ''} title="${pdf ? 'Open the PDF' : 'See the photo'}" aria-label="${pdf ? 'Open the PDF' : 'See the photo'}">${pdf ? '📄' : '📎'}</button>`;
+  };
 
   function renderTransactions() {
     const all = budget.transactions
@@ -1313,7 +1419,14 @@
       case 'edit-target': openTarget(btn.dataset.id); break;
       case 'edit-tx': editTransaction(btn.dataset.id); break;
       case 'new-tx': openTx(); break;
+      case 'edit-rule': editRule(btn.dataset.id); break;
       case 'delete-editing-tx': {
+        if (editingRule) {
+          const r = (budget.recurring || []).find((x) => x.id === editingRule);
+          $('#tx-dialog').close();
+          if (r && attempt(() => B.removeRecurring(budget, r.id), `${r.freq === 'once' ? 'Cancelled' : 'Stopped'} ${r.payee || 'a scheduled transaction'}`)) Sounds.play('crumple');
+          break;
+        }
         const t = budget.transactions.find((x) => x.id === editingTx);
         $('#tx-dialog').close();
         if (t && attempt(() => B.removeTransaction(budget, t.id), `Deleted ${t.payee || 'transaction'}`)) Sounds.play('crumple');
@@ -1324,9 +1437,23 @@
       case 'add-split': addSplitRow('', ''); updateSplitLeft(); break;
       case 'remove-split': btn.closest('.split-row').remove(); if ($('#split-rows').children.length < 2) stopSplit(); else updateSplitLeft(); break;
       case 'remove-receipt-draft': clearReceiptDraft(); break;
-      case 'view-receipt': openReceipt(btn.dataset.id, btn.dataset.tx); break;
+      case 'view-receipt':
+        if (btn.dataset.type === 'pdf') window.open(`/api/receipts/${encodeURIComponent(btn.dataset.id)}`, '_blank', 'noopener');
+        else openReceipt(btn.dataset.id, btn.dataset.tx);
+        break;
       case 'delete-receipt': deleteReceipt(); break;
-      case 'new-envelope': $('#env-form').reset(); $('#env-dialog').showModal(); break;
+      case 'new-envelope': openNewEnvelope({ group: btn.dataset.group || null }); break;
+      case 'add-sub-envelope': {
+        const parent = budget.envelopes.find((e) => e.id === editingTarget);
+        $('#target-dialog').close();
+        if (parent) openNewEnvelope({ parentId: parent.id });
+        break;
+      }
+      case 'pick-sticker': toggleStickers(btn.closest('form')); break;
+      case 'set-sticker': setSticker(btn.closest('form'), btn.dataset.emoji || ''); break;
+      case 'reorder': reordering = !reordering; render(); break;
+      case 'move-group': if (attempt(() => B.moveGroup(budget, btn.dataset.group, Number(btn.dataset.dir)))) Sounds.play('tick'); break;
+      case 'move-env': if (attempt(() => B.moveEnvelope(budget, btn.dataset.id, Number(btn.dataset.dir)))) Sounds.play('tick'); break;
       case 'toggle-group': toggleCollapsed(btn.dataset.group); render(); break;
       case 'toggle-hidden': showHidden = !showHidden; render(); break;
       case 'group-color': openColor(btn.dataset.group); break;
@@ -1365,9 +1492,11 @@
         Sounds.play('crumple');
         break;
       }
-      case 'remove-recurring':
-        attempt(() => B.removeRecurring(budget, btn.dataset.id), 'Stopped a recurring transaction');
+      case 'remove-recurring': {
+        const r = (budget.recurring || []).find((x) => x.id === btn.dataset.id);
+        if (r) attempt(() => B.removeRecurring(budget, r.id), `${r.freq === 'once' ? 'Cancelled' : 'Stopped'} ${r.payee || 'a scheduled transaction'}`);
         break;
+      }
       case 'rename-account': {
         const acct = budget.accounts.find((a) => a.id === btn.dataset.id);
         const name = acct && prompt('New name for this account', acct.name);
@@ -1620,7 +1749,9 @@
       flush();
       return;
     }
-    // Coming back to the tab: pick up changes made on other devices.
+    // Coming back to the tab: add anything scheduled that came due (the app
+    // may have stayed open past midnight), then pick up other devices' changes.
+    if (account && B.applyRecurring(budget, todayISO()) > 0) { scheduleSave(); render(); }
     reloadFromServer();
   });
   window.addEventListener('online', () => { if (dirty) flush(); });
@@ -1638,7 +1769,7 @@
     const views = { 1: 'budget', 2: 'accounts', 3: 'reports', 4: 'goals', 5: 'loans' };
     const k = ev.key;
     if (k === 'n' || k === 'N') { ev.preventDefault(); openTx(); }
-    else if (k === 'e' || k === 'E') { ev.preventDefault(); $('#env-form').reset(); $('#env-dialog').showModal(); }
+    else if (k === 'e' || k === 'E') { ev.preventDefault(); openNewEnvelope(); }
     else if (k === 'm' || k === 'M') { ev.preventDefault(); openMove({}); }
     else if (k === '/') { ev.preventDefault(); goTo('search'); }
     else if (k === 'ArrowLeft') { month = B.shiftMonth(month, -1); render(); }
@@ -1652,12 +1783,14 @@
 
   let envTouched = false;
   let splitOn = false;
-  let receiptDraft = null; // { blob, url } waiting to be uploaded
-  let receiptKeep = null; // receipt id already on the transaction being edited
+  let receiptDraft = null; // { blob, url, kind: 'image'|'pdf', name } waiting to be uploaded
+  let receiptKeep = null; // { id, type, name } already on the transaction being edited
+  let editingRule = null; // id of the scheduled transaction being edited
   const LAST_ACCOUNT = 'envelo.lastAccount';
 
   function openTx({ accountId = null, envelopeId = null } = {}) {
     editingTx = null;
+    editingRule = null;
     const f = $('#tx-form');
     f.reset();
     stopSplit();
@@ -1673,8 +1806,11 @@
     $('#tx-heading').textContent = 'Add transaction';
     $('#tx-submit').textContent = 'Save transaction';
     $('#tx-delete').hidden = true;
+    $('#tx-delete').textContent = 'Delete this transaction';
+    $('#tx-repeat-field').hidden = false;
     $('#tx-error').hidden = true;
     syncKind();
+    syncFutureHint();
     if (!$('#tx-dialog').open) { $('#tx-dialog').showModal(); Sounds.play('whoosh'); }
     setTimeout(() => f.amount.focus(), 30);
   }
@@ -1762,45 +1898,89 @@
   }
   $('#tx-form').amount.addEventListener('input', () => { if (splitOn) updateSplitLeft(); });
 
-  // Receipts: photos are shrunk and turned into WebP on the device (JPEG
-  // where the browser cannot make WebP) before upload.
+  // Attachments: photos are shrunk and turned into WebP on the device (JPEG
+  // where the browser cannot make WebP) before upload; PDFs go as they are.
+  const PDF_LIMIT = 10 * 1024 * 1024;
   async function takeReceipt(file) {
     if (!file) return;
+    const err = $('#tx-error');
+    err.hidden = true;
     try {
-      const blob = await shrinkImage(file);
+      let draft;
+      if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '')) {
+        if (file.size > PDF_LIMIT) throw new Error('That PDF is over 10 MB. Try a smaller one.');
+        draft = { blob: new Blob([file], { type: 'application/pdf' }), kind: 'pdf', name: file.name || 'document.pdf' };
+      } else {
+        draft = { blob: await shrinkImage(file), kind: 'image', name: null };
+      }
       clearReceiptDraft();
-      receiptDraft = { blob, url: URL.createObjectURL(blob) };
-      receiptKeep = null;
-      showReceiptPreview(receiptDraft.url);
-    } catch {
-      $('#tx-error').textContent = 'Could not read that photo.';
-      $('#tx-error').hidden = false;
+      draft.url = URL.createObjectURL(draft.blob);
+      receiptDraft = draft;
+      showReceiptPreview(draft);
+    } catch (e) {
+      err.textContent = e.message;
+      err.hidden = false;
     }
   }
-  function shrinkImage(file, max = 1600) {
+  const PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+  const UPLOAD_TARGET = 900 * 1024; // stays under the 1 MB some reverse proxies allow
+  async function decodeImage(file) {
+    if (window.createImageBitmap) {
+      try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch { /* try an <img> */ }
+    }
     return new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
-      img.onload = () => {
-        URL.revokeObjectURL(url);
-        const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.round(img.naturalWidth * scale);
-        canvas.height = Math.round(img.naturalHeight * scale);
-        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-        canvas.toBlob((webp) => {
-          if (webp && webp.type === 'image/webp') return resolve(webp);
-          canvas.toBlob((jpeg) => (jpeg ? resolve(jpeg) : reject(new Error('encode'))), 'image/jpeg', 0.82);
-        }, 'image/webp', 0.8);
-      };
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('load')); };
       img.src = url;
     });
   }
-  function showReceiptPreview(src) {
-    $('#tx-receipt-preview').innerHTML = src
-      ? `<img src="${esc(src)}" alt="Receipt"><button type="button" class="link" data-action="remove-receipt-draft">Remove</button>`
-      : '';
+  function encode(canvas, type, quality) {
+    return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+  }
+  async function shrinkImage(file) {
+    let img;
+    try {
+      img = await decodeImage(file);
+    } catch {
+      // The browser cannot open it. A normal photo can still go up as it is.
+      if (PHOTO_TYPES.includes(file.type) && file.size <= 3 * 1024 * 1024) return file;
+      if (/hei[cf]/i.test(file.type) || /\.hei[cf]$/i.test(file.name || '')) {
+        throw new Error('This browser cannot open HEIC photos. Take the photo from Envelo, or choose "Most Compatible" in the iPhone camera settings.');
+      }
+      throw new Error('Could not open that photo. Try a JPEG or PNG.');
+    }
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    if (!w || !h) throw new Error('Could not open that photo. Try a JPEG or PNG.');
+    let best = null;
+    for (const [max, quality] of [[1600, 0.8], [1280, 0.7], [1024, 0.6]]) {
+      const scale = Math.min(1, max / Math.max(w, h));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(w * scale));
+      canvas.height = Math.max(1, Math.round(h * scale));
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      let blob = await encode(canvas, 'image/webp', quality);
+      if (!blob || blob.type !== 'image/webp') blob = await encode(canvas, 'image/jpeg', quality);
+      if (!blob) continue;
+      best = blob;
+      if (blob.size <= UPLOAD_TARGET) break;
+    }
+    if (img.close) img.close();
+    if (!best) {
+      if (PHOTO_TYPES.includes(file.type) && file.size <= 3 * 1024 * 1024) return file;
+      throw new Error('Could not process that photo on this device.');
+    }
+    return best;
+  }
+  // a: { url, kind, name } or null
+  function showReceiptPreview(a) {
+    if (!a) { $('#tx-receipt-preview').innerHTML = ''; return; }
+    const what = a.kind === 'pdf'
+      ? `<a class="pdf-chip" href="${esc(a.url)}" target="_blank" rel="noopener">📄 ${esc(a.name || 'PDF')}</a>`
+      : `<img src="${esc(a.url)}" alt="Attached photo">`;
+    $('#tx-receipt-preview').innerHTML = `${what}<button type="button" class="link" data-action="remove-receipt-draft">Remove</button>`;
   }
   function clearReceiptDraft() {
     if (receiptDraft) URL.revokeObjectURL(receiptDraft.url);
@@ -1809,12 +1989,22 @@
     showReceiptPreview(null);
   }
   async function uploadReceipt(blob) {
-    const res = await fetch('/api/receipts', {
-      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': blob.type, 'X-Client-Id': clientId }, body: blob,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'The receipt could not be uploaded.');
-    return data.id;
+    let res;
+    try {
+      res = await fetch('/api/receipts', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': blob.type, 'X-Client-Id': clientId }, body: blob,
+      });
+    } catch {
+      throw new Error('Could not upload the attachment: no connection to the server.');
+    }
+    const data = await res.json().catch(() => null);
+    if (res.ok && data && data.id) return data.id;
+    if (data && data.error) throw new Error(data.error);
+    // No answer from Envelo itself: something in between refused it.
+    if (res.status === 413) {
+      throw new Error(`The file (${Math.ceil(blob.size / 1024)} KB) was refused as too large before it reached Envelo. Raise the upload limit on your reverse proxy (for nginx: client_max_body_size 20m;).`);
+    }
+    throw new Error(`The attachment could not be uploaded (HTTP ${res.status}).`);
   }
   let viewingReceipt = null;
   function openReceipt(id, txId) {
@@ -1823,12 +2013,14 @@
     $('#receipt-dialog').showModal();
   }
   function deleteReceipt() {
-    if (!viewingReceipt || !confirm('Remove this receipt photo? This cannot be undone.')) return;
+    if (!viewingReceipt || !confirm('Remove this photo? This cannot be undone.')) return;
     const { id, txId } = viewingReceipt;
     api('DELETE', `/api/receipts/${encodeURIComponent(id)}`).catch(() => {});
     $('#receipt-dialog').close();
     attempt(() => {
-      for (const t of budget.transactions) if (t.receiptId === id && (!txId || t.id === txId || t.splitId)) delete t.receiptId;
+      for (const t of budget.transactions) {
+        if (t.receiptId === id && (!txId || t.id === txId || t.splitId)) { delete t.receiptId; delete t.receiptType; delete t.receiptName; }
+      }
     });
   }
 
@@ -1853,9 +2045,10 @@
     if (main.envelopeId) f.envelopeId.value = main.envelopeId;
     if (main.toAccountId) f.toAccountId.value = main.toAccountId;
     envTouched = true;
-    const receipt = legs.map((l) => l.receiptId).find(Boolean) || null;
-    receiptKeep = receipt;
-    showReceiptPreview(receipt ? `/api/receipts/${encodeURIComponent(receipt)}` : null);
+    const withFile = legs.find((l) => l.receiptId);
+    receiptKeep = withFile ? { id: withFile.receiptId, type: withFile.receiptType || null, name: withFile.receiptName || null } : null;
+    showReceiptPreview(receiptKeep ? { url: `/api/receipts/${encodeURIComponent(receiptKeep.id)}`, kind: receiptKeep.type === 'pdf' ? 'pdf' : 'image', name: receiptKeep.name } : null);
+    $('#tx-repeat-field').hidden = true;
     if (legs.length > 1) startSplit(legs.map((l) => ({ envelopeId: l.envelopeId, amount: -l.amount })));
     $('#tx-heading').textContent = 'Edit transaction';
     $('#tx-submit').textContent = 'Update transaction';
@@ -1879,17 +2072,32 @@
       if (lines.some((l) => Number.isNaN(l.amount) || l.amount <= 0)) return fail('Every line needs an amount.');
       if (lines.reduce((s, l) => s + l.amount, 0) !== Math.abs(cents)) return fail('The lines must add up to the total.');
     }
-    let receiptId = receiptKeep;
+    const today = todayISO();
+    const future = f.date.value > today;
+    const repeat = f.repeat.value;
+    // A new transaction with a later date waits under "Coming up" until then.
+    const asRule = !!editingRule || (!editingTx && (repeat || future));
+    if (asRule && lines) return fail('A split transaction cannot be scheduled. Use today or an earlier date.');
+    if (asRule && repeat && kind === 'transfer') return fail('Transfers cannot repeat yet. Pick "Does not repeat".');
+    let att = receiptKeep ? { ...receiptKeep } : null;
     if (receiptDraft) {
       try {
         $('#tx-submit').disabled = true;
-        receiptId = await uploadReceipt(receiptDraft.blob);
+        att = { id: await uploadReceipt(receiptDraft.blob), type: receiptDraft.kind === 'pdf' ? 'pdf' : null, name: receiptDraft.name };
       } catch (e) {
         $('#tx-submit').disabled = false;
         return fail(e.message);
       }
       $('#tx-submit').disabled = false;
     }
+    const receiptId = att ? att.id : null;
+    const putFile = (t) => {
+      delete t.receiptId; delete t.receiptType; delete t.receiptName;
+      if (!att) return;
+      t.receiptId = att.id;
+      if (att.type) t.receiptType = att.type;
+      if (att.name) t.receiptName = att.name;
+    };
     let scheduled = false;
     const fields = {
       kind,
@@ -1901,11 +2109,20 @@
       accountId: f.accountId.value || null,
       toAccountId: kind === 'transfer' ? f.toAccountId.value : null,
     };
-    const wasEditing = !!editingTx;
-    const label = `${wasEditing ? 'Updated' : 'Added'} ${fields.payee || (kind === 'income' ? 'income' : 'transaction')} ${money(kind === 'spend' ? -fields.amount : fields.amount)}`;
+    const wasEditing = !!editingTx || !!editingRule;
+    const what = `${fields.payee || (kind === 'income' ? 'income' : 'transaction')} ${money(kind === 'spend' ? -fields.amount : fields.amount)}`;
+    const label = asRule ? `${wasEditing ? 'Updated' : 'Scheduled'} ${what}` : `${wasEditing ? 'Updated' : 'Added'} ${what}`;
     const ok = attempt(() => {
       let main;
-      if (editingTx) {
+      if (asRule) {
+        const freq = repeat ? (repeat === 'biweekly' ? 'weekly' : repeat) : 'once';
+        const every = repeat === 'biweekly' ? 2 : 1;
+        const rule = { ...fields, freq, every, next: fields.date };
+        if (att) Object.assign(rule, { receiptId: att.id, receiptType: att.type, receiptName: att.name });
+        if (editingRule) B.updateRecurring(budget, editingRule, rule);
+        else B.addRecurring(budget, rule);
+        scheduled = B.applyRecurring(budget, today) === 0;
+      } else if (editingTx) {
         const old = budget.transactions.find((x) => x.id === editingTx);
         if (lines) {
           const sid = old && old.splitId;
@@ -1920,16 +2137,15 @@
         }
       } else if (lines) {
         main = B.addSplit(budget, { ...fields, lines, receiptId });
-      } else if (f.repeat.value && kind !== 'transfer') {
-        const freq = f.repeat.value === 'biweekly' ? 'weekly' : f.repeat.value;
-        const every = f.repeat.value === 'biweekly' ? 2 : 1;
-        B.addRecurring(budget, { ...fields, freq, every, next: fields.date });
-        scheduled = B.applyRecurring(budget, todayISO()) === 0;
       } else {
         main = B.addTransaction(budget, fields);
       }
-      if (main && !lines) {
-        if (receiptId) main.receiptId = receiptId; else delete main.receiptId;
+      if (main) {
+        const legs = lines ? B.splitLegs(budget, main.id) : [main];
+        legs.forEach((leg, i) => {
+          if (i === 0) putFile(leg);
+          else { delete leg.receiptId; delete leg.receiptType; delete leg.receiptName; }
+        });
       }
     }, label);
     if (!ok) {
@@ -1941,7 +2157,7 @@
     receiptDraft = null;
     receiptKeep = null;
     Sounds.play('tick');
-    if (scheduled) setSync(`Scheduled: it will be added on ${f.date.value}`);
+    if (scheduled) toast(`Scheduled for ${fmtDay(fields.date)}. It shows under Coming up until then.`);
     if (wasEditing) {
       $('#tx-dialog').close();
     } else {
@@ -1958,9 +2174,11 @@
     const f = ev.target;
     const goalText = f.goal.value.trim();
     const goal = goalText ? B.parseMoney(goalText) : null;
+    let fields;
     const ok = attempt(() => {
       if (goal !== null && Number.isNaN(goal)) throw new Error('Goal must be an amount like 500.00.');
-      B.addEnvelope(budget, { name: f.name.value, group: f.group.value, goal });
+      fields = readEnvFields(f, 'name', 'group');
+      B.addEnvelope(budget, { ...fields, goal });
     }, `Added the envelope ${f.name.value}`);
     if (ok) {
       f.reset();
@@ -3011,6 +3229,13 @@
   }
 
   const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  // "Tue 20 Oct" (with the year when it is not this year).
+  function fmtDay(d) {
+    const [y, mo, day] = d.split('-').map(Number);
+    const opts = { weekday: 'short', day: 'numeric', month: 'short' };
+    if (y !== new Date().getFullYear()) opts.year = 'numeric';
+    return new Date(y, mo - 1, day).toLocaleDateString(undefined, opts);
+  }
   function fmtMonth(m) {
     const [y, mo] = m.split('-').map(Number);
     return new Date(y, mo - 1, 1).toLocaleString(undefined, { month: 'short', year: 'numeric' });
@@ -3030,6 +3255,91 @@
     }
   }
 
+  // Envelope dialogs: sticker, name, group (or a new one) and parent envelope.
+  const STICKERS = ['🛒', '🍎', '🥖', '☕', '🍽️', '🍕', '🍷', '🏠', '🔑', '⚡', '💧', '🔥', '📶', '📱', '💻', '🚗', '⛽', '🚌', '🚲', '✈️',
+    '🏖️', '🧳', '🎁', '🎉', '🎬', '🎮', '🎵', '📚', '🎨', '🏃', '💪', '💊', '🩺', '🦷', '👕', '👟', '💇', '🧴', '🐶', '🐱',
+    '👶', '🎓', '🧸', '🛠️', '🔧', '🪴', '🧾', '💳', '🏦', '💰', '🐷', '🛟', '📈', '🎯', '❤️', '⭐'];
+  function envFieldsFor(f) {
+    return { sticker: f.sticker, btn: f.querySelector('.sticker-btn'), grid: f.querySelector('.sticker-grid'),
+      group: f.querySelector('.group-select'), newGroup: f.newGroup, newField: f.querySelector('.new-group-field'),
+      parent: f.querySelector('.parent-select') };
+  }
+  function setSticker(f, emoji) {
+    const el = envFieldsFor(f);
+    el.sticker.value = emoji;
+    el.btn.textContent = emoji || '＋';
+    el.btn.classList.toggle('empty', !emoji);
+    el.grid.hidden = true;
+    el.btn.setAttribute('aria-expanded', 'false');
+  }
+  function toggleStickers(f) {
+    const el = envFieldsFor(f);
+    if (!el.grid.innerHTML) {
+      el.grid.innerHTML = `${STICKERS.map((e) => `<button type="button" data-action="set-sticker" data-emoji="${e}" aria-label="${e}">${e}</button>`).join('')}
+        <button type="button" class="none" data-action="set-sticker" data-emoji="">No sticker</button>`;
+    }
+    el.grid.hidden = !el.grid.hidden;
+    el.btn.setAttribute('aria-expanded', String(!el.grid.hidden));
+  }
+  // Fill the fields. selfId: the envelope being edited (it cannot be its own parent).
+  function fillEnvFields(f, nameField, { name = '', group = null, parentId = null, selfId = null } = {}) {
+    const el = envFieldsFor(f);
+    const { icon, text } = splitEmoji(name);
+    f[nameField].value = icon ? text : name;
+    setSticker(f, icon || '');
+    const groups = B.groupNames(budget);
+    const pick = group || groups[0] || 'General';
+    const all = groups.includes(pick) ? groups : [...groups, pick];
+    el.group.innerHTML = `${all.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join('')}
+      <option value="__new">＋ New group…</option>`;
+    el.group.value = pick;
+    el.newGroup.value = '';
+    el.newField.hidden = true;
+    const hasChildren = !!selfId && budget.envelopes.some((e) => e.parentId === selfId);
+    const parents = budget.envelopes.filter((e) => !e.parentId && e.id !== selfId);
+    el.parent.innerHTML = `<option value="">No, it is a main envelope</option>
+      ${groups.map((g) => {
+        const list = parents.filter((e) => e.group === g);
+        return list.length ? `<optgroup label="${esc(g)}">${list.map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</optgroup>` : '';
+      }).join('')}`;
+    el.parent.value = parentId || '';
+    el.parent.disabled = hasChildren;
+    el.parent.title = hasChildren ? 'This envelope has sub-envelopes, so it stays a main envelope.' : '';
+    syncEnvGroup(f);
+  }
+  function syncEnvGroup(f) {
+    const el = envFieldsFor(f);
+    const parent = el.parent.value && budget.envelopes.find((e) => e.id === el.parent.value);
+    if (parent) el.group.value = parent.group;
+    el.group.disabled = !!parent;
+    el.newField.hidden = !!parent || el.group.value !== '__new';
+    if (!el.newField.hidden && document.activeElement === el.group) setTimeout(() => el.newGroup.focus(), 0);
+  }
+  function readEnvFields(f, nameField) {
+    const el = envFieldsFor(f);
+    const text = f[nameField].value.trim();
+    if (!text && !el.sticker.value) throw new Error('Give the envelope a name.');
+    const name = el.sticker.value ? `${el.sticker.value} ${text}`.trim() : text;
+    const parentId = el.parent.disabled ? undefined : el.parent.value || null;
+    let group = el.group.value;
+    if (group === '__new') {
+      group = el.newGroup.value.trim();
+      if (!group) throw new Error('Give the new group a name.');
+    }
+    return { name, group, parentId };
+  }
+  for (const f of [$('#env-form'), $('#target-form')]) {
+    f.querySelector('.group-select').addEventListener('change', () => syncEnvGroup(f));
+    f.querySelector('.parent-select').addEventListener('change', () => syncEnvGroup(f));
+  }
+  function openNewEnvelope({ group = null, parentId = null } = {}) {
+    const f = $('#env-form');
+    f.reset();
+    fillEnvFields(f, 'name', { group, parentId });
+    $('#env-dialog').showModal();
+    setTimeout(() => f.name.focus(), 30);
+  }
+
   let editingTarget = null;
   function openTarget(envId) {
     const env = budget.envelopes.find((e) => e.id === envId);
@@ -3039,8 +3349,8 @@
     const f = $('#target-form');
     $('#target-title').textContent = env.name;
     $('#target-error').hidden = true;
-    f.envName.value = env.name;
-    f.envGroup.value = env.group;
+    fillEnvFields(f, 'envName', { name: env.name, group: env.group, parentId: env.parentId, selfId: env.id });
+    $('#add-sub-btn').hidden = !!env.parentId;
     f.carryOverspending.checked = !!env.carryOverspending;
     f.envHidden.checked = !!env.hidden;
     const others = budget.envelopes.filter((e) => e.id !== envId);
@@ -3083,7 +3393,7 @@
     }
     try {
       B.updateEnvelope(budget, editingTarget, {
-        name: f.envName.value, group: f.envGroup.value, carryOverspending: f.carryOverspending.checked,
+        ...readEnvFields(f, 'envName'), carryOverspending: f.carryOverspending.checked,
         hidden: f.envHidden.checked,
       });
       B.setTarget(budget, editingTarget, target);

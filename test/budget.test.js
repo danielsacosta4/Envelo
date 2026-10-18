@@ -314,8 +314,8 @@ test('envelopes can be renamed, regrouped and deleted with their transactions mo
   const c = B.addEnvelope(b, { name: 'Groceries' });
   B.addTransaction(b, { kind: 'spend', date: '2026-10-05', amount: 2000, envelopeId: a.id });
   B.updateEnvelope(b, a.id, { name: 'Eating out', group: 'Fun' });
-  assert.equal(b.envelopes[0].name, 'Eating out');
-  assert.equal(b.envelopes[0].group, 'Fun');
+  assert.equal(a.name, 'Eating out');
+  assert.equal(a.group, 'Fun');
   assert.throws(() => B.deleteEnvelope(b, a.id, null), /Pick an envelope/);
   B.deleteEnvelope(b, a.id, c.id);
   assert.equal(b.envelopes.length, 1);
@@ -587,4 +587,75 @@ test('recap and streaks describe a month, including overspending', () => {
   const s = B.streaks(b, '2026-10');
   assert.equal(s.noOverspending, 0);
   assert.equal(s.saving, 4);
+});
+
+test('groups and envelopes can be reordered', () => {
+  const { b, rent, food } = sample();
+  const water = B.addEnvelope(b, { name: 'Water', group: 'Bills' });
+  const names = () => b.envelopes.map((e) => e.name).join(',');
+  assert.equal(names(), 'Rent,Groceries,Emergency,Water');
+  assert.deepEqual(B.monthView(b, '2026-10').groups.map((g) => g.name), ['Bills', 'Daily', 'Savings']);
+  assert.ok(B.moveGroup(b, 'Savings', -1));
+  assert.deepEqual(B.monthView(b, '2026-10').groups.map((g) => g.name), ['Bills', 'Savings', 'Daily']);
+  assert.equal(B.moveGroup(b, 'Bills', -1), false);
+  assert.ok(B.moveEnvelope(b, water.id, -1));
+  assert.deepEqual(B.monthView(b, '2026-10').groups[0].envelopes.map((e) => e.name), ['Water', 'Rent']);
+  assert.equal(B.moveEnvelope(b, water.id, -1), false);
+  assert.equal(B.moveEnvelope(b, food.id, 1), false);
+  // Moving to another group puts it at the end of that group.
+  B.updateEnvelope(b, rent.id, { name: 'Rent', group: 'Daily' });
+  assert.deepEqual(B.monthView(b, '2026-10').groups.map((g) => [g.name, g.envelopes.map((e) => e.name).join('+')]),
+    [['Bills', 'Water'], ['Savings', 'Emergency'], ['Daily', 'Groceries+Rent']]);
+});
+
+test('sub-envelopes live in their parent group and move with it', () => {
+  const { b, rent, food, fund } = sample();
+  const veg = B.addEnvelope(b, { name: 'Vegetables', group: 'Ignored', parentId: food.id });
+  const meat = B.addEnvelope(b, { name: 'Meat', parentId: food.id });
+  assert.equal(veg.group, 'Daily');
+  assert.equal(B.envelopeStatus(b, meat.id, '2026-10').parentId, food.id);
+  assert.equal(b.envelopes.map((e) => e.name).join(','), 'Rent,Groceries,Vegetables,Meat,Emergency');
+  assert.throws(() => B.addEnvelope(b, { name: 'X', parentId: veg.id }), /own sub-envelopes/);
+  assert.throws(() => B.updateEnvelope(b, food.id, { name: 'Groceries', group: 'Daily', parentId: rent.id }), /has sub-envelopes/);
+  B.moveEnvelope(b, meat.id, -1);
+  assert.equal(b.envelopes.map((e) => e.name).join(','), 'Rent,Groceries,Meat,Vegetables,Emergency');
+  // The parent changes group: the family moves together.
+  B.updateEnvelope(b, food.id, { name: 'Groceries', group: 'Savings' });
+  assert.equal(b.envelopes.map((e) => `${e.name}:${e.group}`).join(','), 'Rent:Bills,Emergency:Savings,Groceries:Savings,Meat:Savings,Vegetables:Savings');
+  // Hiding the parent hides its sub-envelopes.
+  B.updateEnvelope(b, food.id, { name: 'Groceries', group: 'Savings', hidden: true });
+  assert.equal(B.envelopeStatus(b, veg.id, '2026-10').hidden, true);
+  // Out of the parent, then deleting the parent frees the rest.
+  B.updateEnvelope(b, veg.id, { name: 'Vegetables', group: 'Bills', parentId: null });
+  assert.equal(veg.parentId, undefined);
+  assert.equal(veg.group, 'Bills');
+  B.deleteEnvelope(b, food.id, null);
+  assert.equal(meat.parentId, undefined);
+  assert.ok(fund);
+});
+
+test('future transactions wait for their date and count nowhere until then', () => {
+  const { b, food } = sample();
+  B.addAccount(b, { name: 'Bank', balance: 0 });
+  B.addRecurring(b, { kind: 'income', freq: 'once', amount: 200000, payee: 'Bonus', next: '2026-11-05' });
+  B.addRecurring(b, { kind: 'spend', freq: 'once', amount: 3000, payee: 'Concert', envelopeId: food.id, next: '2026-10-20', receiptId: 'r1', receiptType: 'pdf', receiptName: 'ticket.pdf' });
+  B.addRecurring(b, { kind: 'spend', freq: 'monthly', amount: 1000, payee: 'Phone', envelopeId: food.id, next: '2026-10-25' });
+  assert.equal(B.applyRecurring(b, '2026-10-18'), 0);
+  assert.equal(B.readyToAssign(b, '2026-11'), 0);
+  const up = B.upcoming(b, '2026-10-18', '2026-11-30');
+  assert.deepEqual(up.map((u) => [u.date, u.payee, u.amount]), [
+    ['2026-10-20', 'Concert', -3000], ['2026-10-25', 'Phone', -1000], ['2026-11-05', 'Bonus', 200000], ['2026-11-25', 'Phone', -1000],
+  ]);
+  assert.equal(B.applyRecurring(b, '2026-10-21'), 1);
+  const concert = b.transactions.find((t) => t.payee === 'Concert');
+  assert.equal(concert.receiptType, 'pdf');
+  assert.equal(concert.recurringId, undefined);
+  assert.equal(b.recurring.length, 2);
+  const bonus = b.recurring.find((r) => r.payee === 'Bonus');
+  B.updateRecurring(b, bonus.id, { ...bonus, amount: 250000 });
+  B.applyRecurring(b, '2026-11-06');
+  // October went 4,000 overspent, which comes out of November.
+  assert.equal(B.readyToAssign(b, "2026-11"), 246000);
+  assert.equal(b.recurring.length, 1);
+  assert.throws(() => B.addRecurring(b, { kind: 'transfer', freq: 'monthly', amount: 1, next: '2026-12-01' }), /cannot repeat/);
 });

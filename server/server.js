@@ -28,7 +28,8 @@ const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
 const MAX_RECEIPT_BYTES = 3 * 1024 * 1024;
-const RECEIPT_TYPES = { 'image/webp': 'webp', 'image/jpeg': 'jpg', 'image/png': 'png' };
+const MAX_PDF_BYTES = 10 * 1024 * 1024;
+const RECEIPT_TYPES = { 'image/webp': 'webp', 'image/jpeg': 'jpg', 'image/png': 'png', 'application/pdf': 'pdf' };
 const RECOVERY_CODES = 10;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 10;
@@ -261,16 +262,16 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
     return new Promise((resolve, reject) => {
       const chunks = [];
       let size = 0;
+      // Past the limit, keep reading but drop the bytes, so the browser gets
+      // the 413 answer instead of a broken connection.
       req.on('data', (chunk) => {
         size += chunk.length;
-        if (size > limit) {
-          reject(new HttpError(413, 'The file is too large.'));
-          req.destroy();
-          return;
-        }
-        chunks.push(chunk);
+        if (size <= limit) chunks.push(chunk);
       });
-      req.on('end', () => resolve(Buffer.concat(chunks)));
+      req.on('end', () => {
+        if (size > limit) reject(new HttpError(413, `The file is too large (the limit is ${Math.round(limit / 1048576)} MB).`));
+        else resolve(Buffer.concat(chunks));
+      });
       req.on('error', reject);
     });
   }
@@ -559,9 +560,11 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
     if (req.method === 'POST' && pathname === '/api/receipts') {
       const user = requireUser(req);
       const type = String(req.headers['content-type'] || '').split(';')[0].trim();
-      if (!RECEIPT_TYPES[type]) throw new HttpError(415, 'Receipts must be WebP, JPEG or PNG images.');
-      const bytes = await readRaw(req, MAX_RECEIPT_BYTES);
-      if (!bytes.length) throw new HttpError(400, 'The photo is empty.');
+      if (!RECEIPT_TYPES[type]) throw new HttpError(415, 'Attachments must be a photo (WebP, JPEG or PNG) or a PDF.');
+      const isPdf = type === 'application/pdf';
+      const bytes = await readRaw(req, isPdf ? MAX_PDF_BYTES : MAX_RECEIPT_BYTES);
+      if (!bytes.length) throw new HttpError(400, 'The file is empty.');
+      if (isPdf && bytes.subarray(0, 5).toString('latin1') !== '%PDF-') throw new HttpError(415, 'That file is not a PDF.');
       const id = crypto.randomUUID();
       const dir = receiptDir(user.email);
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -584,12 +587,19 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
         const nl = plain.indexOf(10);
         const type = plain.subarray(0, nl).toString('utf8');
         const body = plain.subarray(nl + 1);
-        res.writeHead(200, {
+        const headers = {
           'Content-Type': RECEIPT_TYPES[type] ? type : 'application/octet-stream',
           'Content-Length': body.length,
           'Cache-Control': 'private, max-age=86400',
           ...SECURITY_HEADERS,
-        });
+        };
+        if (type === 'application/pdf') {
+          // The page policy (object-src 'none') would stop the browser's PDF
+          // viewer. A PDF opens on its own, outside the app, so it goes without.
+          delete headers['Content-Security-Policy'];
+          headers['Content-Disposition'] = 'inline; filename="attachment.pdf"';
+        }
+        res.writeHead(200, headers);
         return res.end(body);
       }
     }

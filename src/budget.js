@@ -42,7 +42,7 @@
     return b;
   }
 
-  function addEnvelope(b, { name, group, goal, target }) {
+  function addEnvelope(b, { name, group, goal, target, parentId }) {
     const clean = String(name || '').trim();
     if (!clean) throw new Error('Envelope needs a name.');
     let t = target ? normalizeTarget(target) : null;
@@ -53,8 +53,32 @@
       group: String(group || '').trim() || 'General',
       target: t,
     };
+    if (parentId) {
+      const parent = checkParent(b, env, parentId);
+      env.parentId = parent.id;
+      env.group = parent.group;
+      // Right after the parent's last sub-envelope.
+      let at = b.envelopes.indexOf(parent);
+      b.envelopes.forEach((e, i) => { if (e.parentId === parent.id) at = i; });
+      b.envelopes.splice(at + 1, 0, env);
+      return env;
+    }
     b.envelopes.push(env);
     return env;
+  }
+
+  // Sub-envelopes: one level deep. A sub-envelope lives in its parent's group.
+  function checkParent(b, env, parentId) {
+    const parent = b.envelopes.find((e) => e.id === parentId);
+    if (!parent) throw new Error('Unknown parent envelope.');
+    if (parent.id === env.id) throw new Error('An envelope cannot be inside itself.');
+    if (parent.parentId) throw new Error('Sub-envelopes cannot have their own sub-envelopes.');
+    if (b.envelopes.some((e) => e.parentId === env.id)) throw new Error('This envelope has sub-envelopes, so it cannot go inside another.');
+    return parent;
+  }
+
+  function childrenOf(b, id) {
+    return b.envelopes.filter((e) => e.parentId === id);
   }
 
   // Targets
@@ -160,15 +184,95 @@
     deleteEnvelope(b, id, null);
   }
 
-  function updateEnvelope(b, id, { name, group, carryOverspending, hidden }) {
+  //   parentId: undefined keeps it, null or '' makes it a top-level envelope
+  function updateEnvelope(b, id, { name, group, carryOverspending, hidden, parentId }) {
     const env = b.envelopes.find((e) => e.id === id);
     if (!env) throw new Error('Unknown envelope.');
     const clean = String(name || '').trim();
     if (!clean) throw new Error('Envelope needs a name.');
+    const newGroup = String(group || '').trim() || 'General';
+    if (parentId !== undefined) {
+      if (parentId) {
+        const parent = checkParent(b, env, parentId);
+        if (env.parentId !== parent.id) {
+          env.parentId = parent.id;
+          env.group = parent.group;
+          placeAfterFamily(b, env, parent);
+        }
+      } else if (env.parentId) {
+        delete env.parentId;
+        env.group = newGroup;
+        placeLastInGroup(b, env);
+      } else if (env.group !== newGroup) {
+        env.group = newGroup;
+        placeLastInGroup(b, env);
+      }
+    } else if (!env.parentId && env.group !== newGroup) {
+      env.group = newGroup;
+      placeLastInGroup(b, env);
+    }
     env.name = clean;
-    env.group = String(group || '').trim() || 'General';
+    // Sub-envelopes follow their parent's group.
+    if (!env.parentId) for (const c of childrenOf(b, env.id)) c.group = env.group;
     if (carryOverspending !== undefined) env.carryOverspending = !!carryOverspending;
     if (hidden !== undefined) env.hidden = !!hidden;
+  }
+
+  function placeAfterFamily(b, env, parent) {
+    b.envelopes.splice(b.envelopes.indexOf(env), 1);
+    let at = b.envelopes.indexOf(parent);
+    b.envelopes.forEach((e, i) => { if (e.parentId === parent.id) at = i; });
+    b.envelopes.splice(at + 1, 0, env);
+  }
+
+  // Moving an envelope to another group puts it (and its sub-envelopes) at the
+  // end of that group, so groups stay together.
+  function placeLastInGroup(b, env) {
+    const family = [env, ...childrenOf(b, env.id)];
+    b.envelopes = b.envelopes.filter((e) => !family.includes(e));
+    let at = -1;
+    b.envelopes.forEach((e, i) => { if (e.group === env.group) at = i; });
+    if (at === -1) b.envelopes.push(...family);
+    else b.envelopes.splice(at + 1, 0, ...family);
+  }
+
+  // Reordering. Groups show in the order their envelopes first appear, so a
+  // group moves as a block. dir: -1 up, 1 down.
+  function moveGroup(b, group, dir) {
+    const names = groupNames(b);
+    const i = names.indexOf(group);
+    const j = i + dir;
+    if (i === -1 || j < 0 || j >= names.length) return false;
+    [names[i], names[j]] = [names[j], names[i]];
+    b.envelopes = names.flatMap((n) => b.envelopes.filter((e) => e.group === n));
+    return true;
+  }
+
+  // Move an envelope up or down among its siblings (same group, same parent).
+  // A top-level envelope takes its sub-envelopes with it.
+  function moveEnvelope(b, id, dir) {
+    const env = b.envelopes.find((e) => e.id === id);
+    if (!env) throw new Error('Unknown envelope.');
+    const siblings = b.envelopes.filter((e) => e.group === env.group && (e.parentId || null) === (env.parentId || null));
+    const i = siblings.indexOf(env);
+    const j = i + dir;
+    if (j < 0 || j >= siblings.length) return false;
+    [siblings[i], siblings[j]] = [siblings[j], siblings[i]];
+    const others = b.envelopes.filter((e) => e.group !== env.group);
+    let ordered;
+    if (env.parentId) {
+      const groupEnvs = b.envelopes.filter((e) => e.group === env.group);
+      let k = 0;
+      ordered = groupEnvs.map((e) => (e.parentId === env.parentId ? siblings[k++] : e));
+    } else {
+      ordered = siblings.flatMap((e) => [e, ...childrenOf(b, e.id)]);
+      // Orphans (parent missing) keep their place at the end.
+      for (const e of b.envelopes) if (e.group === env.group && !ordered.includes(e)) ordered.push(e);
+    }
+    // Put the group back where it was.
+    const names = groupNames(b);
+    b.envelopes = names.flatMap((n) => (n === env.group ? ordered : others.filter((e) => e.group === n)));
+    return true;
   }
 
   // Delete an envelope. Its transactions and recurring rules move to `moveToId`.
@@ -185,6 +289,7 @@
       for (const r of b.recurring || []) if (r.envelopeId === id) r.envelopeId = moveToId;
     }
     b.envelopes = b.envelopes.filter((e) => e.id !== id);
+    for (const e of b.envelopes) if (e.parentId === id) delete e.parentId;
     for (const m of Object.keys(b.assignments)) {
       delete b.assignments[m][id];
       if (!Object.keys(b.assignments[m]).length) delete b.assignments[m];
@@ -459,38 +564,80 @@
     }).sort((x, y) => (x.date < y.date ? 1 : x.date > y.date ? -1 : 0));
   }
 
-  // Recurring transactions
-  //   { id, kind: 'spend'|'income', amount, payee, note, envelopeId, accountId,
-  //     freq: 'weekly'|'monthly'|'yearly', every, next: 'YYYY-MM-DD', day }
+  // Recurring and scheduled transactions
+  //   { id, kind: 'spend'|'income'|'transfer', amount, payee, note, envelopeId,
+  //     accountId, toAccountId, freq: 'once'|'weekly'|'monthly'|'yearly',
+  //     every, next: 'YYYY-MM-DD', day, receiptId?, receiptType?, receiptName? }
+  // 'once' is a future transaction: it is added on its date and then removed,
+  // and until then it counts nowhere (not in balances, envelopes or Ready to
+  // Assign). Only 'once' rules can be transfers.
 
   function normalizeRecurring(b, r) {
     const freq = r.freq;
-    if (!['weekly', 'monthly', 'yearly'].includes(freq)) throw new Error('Pick how often it repeats.');
+    if (!['once', 'weekly', 'monthly', 'yearly'].includes(freq)) throw new Error('Pick how often it repeats.');
+    if (r.kind === 'transfer' && freq !== 'once') throw new Error('Transfers cannot repeat yet.');
     const every = Number(r.every || 1);
     if (!Number.isInteger(every) || every < 1 || every > 52) throw new Error('Repeat every 1 to 52 periods.');
     if (!DATE_RE.test(r.next || '')) throw new Error('Pick the next date.');
     // Validate amount, envelope and account the same way as a real transaction.
     buildTransaction(b, { ...r, date: r.next });
-    return {
+    const rule = {
       id: r.id || newId(),
       kind: r.kind,
       amount: Number(r.amount),
       payee: String(r.payee || '').trim(),
       note: String(r.note || '').trim(),
-      envelopeId: r.kind === 'spend' ? r.envelopeId : null,
+      envelopeId: r.kind === 'income' ? null : r.envelopeId || null,
       accountId: r.accountId || defaultAccountId(b),
       freq,
       every,
       next: r.next,
       day: Number(r.next.slice(8, 10)),
     };
+    if (r.kind === 'transfer') rule.toAccountId = r.toAccountId;
+    if (r.receiptId) {
+      rule.receiptId = r.receiptId;
+      if (r.receiptType) rule.receiptType = r.receiptType;
+      if (r.receiptName) rule.receiptName = r.receiptName;
+    }
+    return rule;
   }
 
   function addRecurring(b, r) {
-    if (!['spend', 'income'].includes(r.kind)) throw new Error('Recurring transactions are spending or income.');
+    if (!['spend', 'income', 'transfer'].includes(r.kind)) throw new Error('Pick spending, income or a transfer.');
     const rule = normalizeRecurring(b, r);
     b.recurring.push(rule);
     return rule;
+  }
+
+  function updateRecurring(b, id, r) {
+    const i = (b.recurring || []).findIndex((x) => x.id === id);
+    if (i === -1) throw new Error('Unknown scheduled transaction.');
+    if (!['spend', 'income', 'transfer'].includes(r.kind)) throw new Error('Pick spending, income or a transfer.');
+    b.recurring[i] = normalizeRecurring(b, { ...r, id });
+    return b.recurring[i];
+  }
+
+  // Every scheduled occurrence from `from` to `to` (inclusive), soonest first.
+  // amount is signed like a transaction: spending negative, income positive.
+  function upcoming(b, from, to) {
+    const out = [];
+    for (const rule of b.recurring || []) {
+      let date = rule.next;
+      let guard = 0;
+      while (date && date <= to && guard++ < 400) {
+        if (date >= from) {
+          out.push({
+            ruleId: rule.id, date, kind: rule.kind, payee: rule.payee, note: rule.note,
+            envelopeId: rule.envelopeId, accountId: rule.accountId, toAccountId: rule.toAccountId || null,
+            amount: rule.kind === 'income' ? rule.amount : -rule.amount,
+            once: rule.freq === 'once', first: date === rule.next,
+          });
+        }
+        date = rule.freq === 'once' ? null : nextRecurringDate(rule, date);
+      }
+    }
+    return out.sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : 0));
   }
 
   function removeRecurring(b, id) {
@@ -518,13 +665,25 @@
     let created = 0;
     for (const rule of b.recurring || []) {
       let guard = 0;
-      while (rule.next <= today && guard++ < 500) {
+      while (rule.next && rule.next <= today && guard++ < 500) {
         const t = addTransaction(b, { ...rule, date: rule.next });
-        t.recurringId = rule.id;
-        rule.next = nextRecurringDate(rule, rule.next);
+        // An attachment goes on the first transaction the rule creates.
+        if (rule.receiptId) {
+          t.receiptId = rule.receiptId;
+          if (rule.receiptType) t.receiptType = rule.receiptType;
+          if (rule.receiptName) t.receiptName = rule.receiptName;
+          delete rule.receiptId; delete rule.receiptType; delete rule.receiptName;
+        }
+        if (rule.freq === 'once') {
+          rule.next = null;
+        } else {
+          t.recurringId = rule.id;
+          rule.next = nextRecurringDate(rule, rule.next);
+        }
         created++;
       }
     }
+    b.recurring = (b.recurring || []).filter((r) => r.next);
     return created;
   }
 
@@ -655,6 +814,7 @@
       id: env.id,
       name: env.name,
       group: env.group,
+      parentId: env.parentId || null,
       hidden: isHidden(b, env),
       target,
       carryover,
@@ -674,7 +834,9 @@
   // Hidden envelopes (or envelopes in a hidden group) stay in every total but
   // are tucked away on screen and left out of "Fund all targets".
   function isHidden(b, env) {
-    return !!env.hidden || (b.hiddenGroups || []).includes(env.group);
+    if (env.hidden || (b.hiddenGroups || []).includes(env.group)) return true;
+    const parent = env.parentId && b.envelopes.find((e) => e.id === env.parentId);
+    return !!(parent && parent.hidden);
   }
 
   function setGroupHidden(b, group, hidden) {
@@ -1194,6 +1356,7 @@
     shiftMonth, parseMoney, formatMoney, toInput, fromJSON,
     setTarget, normalizeTarget, fundAllTargets, weekdaysInMonth,
     updateEnvelope, deleteEnvelope, updateTransaction, transactionKind,
+    moveGroup, moveEnvelope, childrenOf, updateRecurring, upcoming,
     addAccount, updateAccount, deleteAccount, accountBalance, reconcileAccount, ensureAccounts,
     isOnBudget, transferNeedsEnvelope, countsAsIncome, isHidden, setGroupHidden, accountRegister,
     addRecurring, removeRecurring, applyRecurring, nextRecurringDate, report,

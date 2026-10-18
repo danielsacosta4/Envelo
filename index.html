@@ -83,6 +83,7 @@
       <div class="toolbar">
         <h2 class="page-h">Envelopes</h2>
         <div class="row">
+          <button type="button" class="btn sm" id="reorder-btn" data-action="reorder" aria-pressed="false">Reorder</button>
           <button type="button" class="btn sm" data-action="move-money">Move money</button>
           <button type="button" class="btn sm" data-action="new-envelope">+ Envelope</button>
         </div>
@@ -100,6 +101,7 @@
         <ul id="tx-list" class="tx-list"></ul>
         <button type="button" class="link" data-view="search">All transactions →</button>
       </section>
+      <div id="side-upcoming"></div>
       <div id="side-goal"></div>
       <div id="side-loan"></div>
       <div id="side-streak"></div>
@@ -130,9 +132,9 @@
         <button type="button" class="btn" data-action="bank-import">Import bank file</button>
       </section>
       <section class="card">
-        <h2>Recurring transactions</h2>
+        <h2>Coming up and repeating</h2>
         <ul id="recurring-list" class="tx-list"></ul>
-        <p class="hint">Add one with the Repeat option when adding a transaction.</p>
+        <p class="hint">Give a new transaction a future date, or pick a Repeat option, and it shows here until it is due.</p>
       </section>
     </aside>
   </section>
@@ -442,6 +444,7 @@
       </div>
       <button type="button" class="link" id="split-toggle" data-action="split-tx">Split across envelopes</button>
       <label>Date <input type="date" name="date" required></label>
+      <p id="tx-future-hint" class="hint future-hint" hidden></p>
       <label><span id="tx-account-label">Account</span> <select name="accountId" id="tx-account"></select></label>
       <label id="tx-to-field" hidden>To account <select name="toAccountId" id="tx-to"></select></label>
       <label>Note <input type="text" name="note" maxlength="140" placeholder="Optional"></label>
@@ -455,7 +458,7 @@
         </select>
       </label>
       <div class="receipt-field">
-        <label class="btn sm file-btn">📎 Add a receipt photo<input type="file" id="tx-receipt" accept="image/*" hidden></label>
+        <label class="btn sm file-btn">📎 Attach a photo or PDF<input type="file" id="tx-receipt" class="file-input" accept="image/*,application/pdf,.pdf"></label>
         <div id="tx-receipt-preview" class="receipt-preview"></div>
       </div>
       <p id="tx-error" class="auth-message" hidden></p>
@@ -470,13 +473,25 @@
   <dialog id="env-dialog" class="modal">
     <form id="env-form" class="stack" autocomplete="off">
       <h2>New envelope</h2>
-      <label>Name <input type="text" name="name" maxlength="60" required placeholder="🛒 Groceries"></label>
-      <label>Group <input type="text" name="group" maxlength="40" list="group-list" placeholder="Everyday"></label>
-      <datalist id="group-list"></datalist>
+      <div class="name-row">
+        <div class="sticker-field">
+          <span class="field-label">Sticker</span>
+          <button type="button" class="sticker-btn" data-action="pick-sticker" aria-haspopup="true" aria-label="Choose a sticker"></button>
+          <input type="hidden" name="sticker">
+        </div>
+        <label class="grow">Name <input type="text" name="name" maxlength="60" required placeholder="Groceries"></label>
+      </div>
+      <div class="sticker-grid" hidden></div>
+      <label>Group
+        <select name="group" class="group-select"></select>
+      </label>
+      <label class="new-group-field" hidden>New group name <input type="text" name="newGroup" maxlength="40" placeholder="e.g. Holidays"></label>
+      <label>Inside another envelope <span class="optional">(optional)</span>
+        <select name="parentId" class="parent-select"></select>
+      </label>
       <label>Target balance <span class="optional">(optional)</span>
         <input type="text" name="goal" inputmode="decimal" placeholder="e.g. 500.00">
       </label>
-      <p class="hint">Tip: start the name with an emoji and it becomes the envelope's sticker.</p>
       <div class="row">
         <button type="submit" class="btn primary">Add envelope</button>
         <button type="button" class="btn" data-action="close-dialog">Cancel</button>
@@ -509,8 +524,23 @@
     <form id="target-form" class="stack" autocomplete="off">
       <h2 id="target-title">Envelope</h2>
       <p id="target-error" class="auth-message" hidden></p>
-      <label>Name <input type="text" name="envName" maxlength="60" required></label>
-      <label>Group <input type="text" name="envGroup" maxlength="40" list="group-list"></label>
+      <div class="name-row">
+        <div class="sticker-field">
+          <span class="field-label">Sticker</span>
+          <button type="button" class="sticker-btn" data-action="pick-sticker" aria-haspopup="true" aria-label="Choose a sticker"></button>
+          <input type="hidden" name="sticker">
+        </div>
+        <label class="grow">Name <input type="text" name="envName" maxlength="60" required placeholder="Name"></label>
+      </div>
+      <div class="sticker-grid" hidden></div>
+      <label>Group
+        <select name="envGroup" class="group-select"></select>
+      </label>
+      <label class="new-group-field" hidden>New group name <input type="text" name="newGroup" maxlength="40" placeholder="e.g. Holidays"></label>
+      <label>Inside another envelope <span class="optional">(optional)</span>
+        <select name="parentId" class="parent-select"></select>
+      </label>
+      <button type="button" class="link" data-action="add-sub-envelope" id="add-sub-btn">+ Add a sub-envelope inside this one</button>
       <label class="check"><input type="checkbox" name="envHidden">
         <span>Hide this envelope <span class="optional">(it keeps its money and still counts in totals)</span></span>
       </label>

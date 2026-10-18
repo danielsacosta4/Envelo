@@ -538,6 +538,19 @@ test('receipts are stored encrypted, only for their owner, and go with a deleted
     assert.ok(Buffer.from(await got.arrayBuffer()).equals(image));
     const files = fs.readdirSync(path.join(s.dataDir, 'receipts'), { recursive: true }).filter((f) => String(f).endsWith('.bin'));
     assert.equal(files.length, 1);
+    // PDFs: checked, served for the browser's viewer, and limited in size.
+    const pdf = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(300, 32)]);
+    const upPdf = await fetch(`${s.base}/api/receipts`, { method: 'POST', headers: { Cookie: a.cookie(), 'Content-Type': 'application/pdf' }, body: pdf });
+    assert.equal(upPdf.status, 201);
+    const gotPdf = await fetch(`${s.base}/api/receipts/${(await upPdf.json()).id}`, { headers: { Cookie: a.cookie() } });
+    assert.equal(gotPdf.headers.get('content-type'), 'application/pdf');
+    assert.equal(gotPdf.headers.get('content-security-policy'), null);
+    assert.ok(Buffer.from(await gotPdf.arrayBuffer()).equals(pdf));
+    const fake = await fetch(`${s.base}/api/receipts`, { method: 'POST', headers: { Cookie: a.cookie(), 'Content-Type': 'application/pdf' }, body: 'not a pdf' });
+    assert.equal(fake.status, 415);
+    const huge = await fetch(`${s.base}/api/receipts`, { method: 'POST', headers: { Cookie: a.cookie(), 'Content-Type': 'image/jpeg' }, body: Buffer.alloc(4 * 1024 * 1024, 1) });
+    assert.equal(huge.status, 413);
+    assert.match((await huge.json()).error, /3 MB/);
     assert.ok(!fs.readFileSync(path.join(s.dataDir, 'receipts', String(files[0]))).includes(Buffer.from('WEBP')));
     const other = client(s.base);
     await other('POST', '/api/register', { email: 'other@example.com', password: 'longenough1' });
