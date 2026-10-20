@@ -81,6 +81,8 @@ The screenshots use a made-up household budget.
 - Bank CSV import for any bank: the separator, date format, decimal comma and
   columns are worked out (Revolut and N26 recognised), remembered per account,
   duplicates skipped and envelopes filled from what each payee was used for.
+- Payees page: rename or merge payees everywhere, and rules that tidy bank
+  names and pick the envelope on every import.
 - Split transactions, move money between envelopes, cover overspending in a
   click, payee memory, search across every transaction, undo (Ctrl+Z) and
   keyboard shortcuts (press ? to see them).

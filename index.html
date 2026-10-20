@@ -50,6 +50,7 @@
         <button type="button" data-view="reports">Reports</button>
         <button type="button" data-view="goals">Goals</button>
         <button type="button" data-view="loans">Loans</button>
+        <button type="button" data-view="payees">Payees</button>
         <button type="button" data-view="shared" class="nav-shared" hidden>Shared</button>
       </nav>
       <div class="top-tools">
@@ -229,6 +230,34 @@
   <section id="view-shared" class="layout single" hidden>
     <div class="toolbar"><h2 class="page-h">Shared with you</h2></div>
     <div id="shared-list" class="shared-list"></div>
+  </section>
+
+  <section id="view-payees" class="layout single" hidden>
+    <div class="toolbar">
+      <h2 class="page-h">Payees</h2>
+      <div class="row"><button type="button" class="btn sm" data-action="new-payee-rule">+ Rule</button></div>
+    </div>
+    <section class="card">
+      <div class="card-head"><h2>Rules</h2><span class="hint" id="rules-count"></span></div>
+      <p class="hint">Rules tidy up names from bank files (for example anything containing "PINGO DOCE" becomes "Pingo Doce") and pick the envelope. They run on every bank import.</p>
+      <ul id="rules-list" class="tx-list"></ul>
+      <button type="button" class="btn sm" id="apply-rules" data-action="apply-payee-rules" hidden>Apply rules to existing transactions</button>
+    </section>
+    <section class="card">
+      <div class="search-bar payee-bar">
+        <input type="search" id="payee-q" placeholder="Find a payee" aria-label="Find a payee">
+        <span class="hint" id="payee-count"></span>
+      </div>
+      <div id="payee-merge" class="merge-bar" hidden>
+        <span id="payee-merge-text"></span>
+        <button type="button" class="btn sm primary" data-action="merge-payees">Merge into one</button>
+        <button type="button" class="link" data-action="clear-payee-selection">Clear</button>
+      </div>
+      <div class="table-wrap"><table class="payee-table">
+        <thead><tr><th class="sel"></th><th>Payee</th><th class="num">Used</th><th class="num">Total</th><th>Usual envelope</th><th>Last</th><th></th></tr></thead>
+        <tbody id="payee-rows"></tbody>
+      </table></div>
+    </section>
   </section>
 
   <section id="view-search" class="layout single" hidden>
@@ -416,6 +445,7 @@
     <div class="sheet-grid">
       <button type="button" class="btn" data-view="reports">Reports</button>
       <button type="button" class="btn" data-view="loans">Loans</button>
+      <button type="button" class="btn" data-view="payees">Payees</button>
       <button type="button" class="btn nav-shared" data-view="shared" hidden>Shared</button>
       <button type="button" class="btn" data-view="search">Search</button>
       <button type="button" class="btn" data-view="settings">Settings</button>
@@ -679,6 +709,28 @@
   </dialog>
 
   <dialog id="check-dialog" class="modal wide"><div id="check-body"></div></dialog>
+  <dialog id="rule-dialog" class="modal">
+    <form id="rule-form" class="stack" autocomplete="off">
+      <h2 id="rule-title">Payee rule</h2>
+      <div class="row grow-row">
+        <label>When the payee
+          <select name="match"><option value="contains">contains</option><option value="is">is exactly</option></select>
+        </label>
+        <label>Text <input type="text" name="text" maxlength="80" required placeholder="PINGO DOCE"></label>
+      </div>
+      <label>Rename it to <span class="optional">(optional)</span><input type="text" name="rename" maxlength="80" placeholder="Pingo Doce"></label>
+      <label>Put spending in <span class="optional">(optional)</span><select name="envelopeId"></select></label>
+      <p class="hint" id="rule-preview"></p>
+      <label class="check"><input type="checkbox" name="applyNow" checked><span>Also apply to existing transactions now <span class="optional">(spending that already has an envelope keeps it)</span></span></label>
+      <p id="rule-error" class="auth-message" hidden></p>
+      <div class="row">
+        <button type="submit" class="btn primary">Save rule</button>
+        <button type="button" class="btn" data-action="close-dialog">Cancel</button>
+        <button type="button" class="link danger-link" id="rule-delete" data-action="delete-payee-rule" hidden>Delete rule</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="bulk-dialog" class="modal">
     <form id="bulk-form" class="stack" autocomplete="off">
       <h2 id="bulk-title">Delete transactions</h2>

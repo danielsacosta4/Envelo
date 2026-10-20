@@ -652,7 +652,7 @@
 
     if (currentView === 'account' && !budget.accounts.some((a) => a.id === openAccountId)) currentView = 'accounts';
     if (currentView === 'shared' && !shares.incoming.length) currentView = 'budget';
-    const VIEWS = ['budget', 'accounts', 'account', 'reports', 'recap', 'loans', 'goals', 'shared', 'search', 'settings'];
+    const VIEWS = ['budget', 'accounts', 'account', 'reports', 'recap', 'loans', 'goals', 'shared', 'search', 'payees', 'settings'];
     for (const v of VIEWS) $(`#view-${v}`).hidden = v !== currentView;
     const tab = currentView === 'account' ? 'accounts' : currentView === 'recap' ? 'reports' : currentView;
     document.querySelectorAll('.views [data-view], .bottom-nav [data-view], .top-tools [data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === tab));
@@ -678,6 +678,7 @@
     if (currentView === 'goals') renderGoals();
     if (currentView === 'shared') renderShared();
     if (currentView === 'search') renderSearch();
+    if (currentView === 'payees') renderPayees();
     if (currentView === 'recap') renderRecap();
   }
 
@@ -1470,6 +1471,52 @@
       case 'set-sticker': setSticker(btn.closest('form'), btn.dataset.emoji || ''); break;
       case 'reorder': reordering = !reordering; render(); break;
       case 'check-accounts': openCheckAccounts(); break;
+      case 'new-payee-rule': openRule(null, btn.dataset.payee || ''); break;
+      case 'edit-payee-rule': openRule(btn.dataset.id); break;
+      case 'delete-payee-rule': {
+        const r = (budget.payeeRules || []).find((x) => x.id === editingRuleId);
+        $('#rule-dialog').close();
+        if (r) attempt(() => B.removePayeeRule(budget, r.id), `Deleted the rule for "${r.text}"`);
+        break;
+      }
+      case 'apply-payee-rules': {
+        let res;
+        if (attempt(() => { res = B.applyPayeeRules(budget); }, 'Applied payee rules')) {
+          toast(`Renamed ${res.renamed}, gave an envelope to ${res.categorised}.`, { action: 'Undo', onAction: undo });
+        }
+        break;
+      }
+      case 'rename-payee': {
+        const name = btn.dataset.payee;
+        const to = prompt(`Rename "${name}" on every transaction to:`, name);
+        if (to && to.trim() && to.trim() !== name) {
+          let n = 0;
+          if (attempt(() => { n = B.renamePayees(budget, [name], to); }, `Renamed ${name}`)) toast(`Renamed ${n} transaction${n === 1 ? '' : 's'} to ${to.trim()}`, { action: 'Undo', onAction: undo });
+        }
+        break;
+      }
+      case 'payee-transactions': {
+        $('#search-envelope').innerHTML = '<option value=""></option>';
+        $('#search-q').value = btn.dataset.payee;
+        goTo('search');
+        break;
+      }
+      case 'merge-payees': {
+        const names = [...payeeSelection];
+        if (names.length < 2) break;
+        const list = B.payeeList(budget).filter((p) => payeeSelection.has(p.name));
+        const to = prompt(`Merge ${names.length} payees into one. Name:`, list[0] ? list[0].name : names[0]);
+        if (to && to.trim()) {
+          let n = 0;
+          if (attempt(() => { n = B.renamePayees(budget, names, to); }, `Merged ${names.length} payees`)) {
+            payeeSelection.clear();
+            toast(`Merged into ${to.trim()} (${n} transaction${n === 1 ? '' : 's'} renamed)`, { action: 'Undo', onAction: undo });
+            render();
+          }
+        }
+        break;
+      }
+      case 'clear-payee-selection': payeeSelection.clear(); renderPayees(); break;
       case 'categorise': {
         const sel = $('#search-envelope');
         sel.innerHTML = `<option value="${esc(btn.dataset.id)}"></option>`;
@@ -2580,6 +2627,14 @@
       }
     }
     const acctName = (id) => (budget.accounts.find((a) => a.id === id) || {}).name || 'another account';
+    // Payee rules: tidy names and pick envelopes. The bank's own text stays
+    // on the row for recognising it next time.
+    for (const t of fresh) {
+      t.bankPayee = t.bankPayee || t.payee;
+      const r = B.applyPayeeRule(budget, t.bankPayee);
+      t.payee = r.payee;
+      if (onBudget && r.envelopeId && t.amount < 0 && t.envelopeId === undefined) t.envelopeId = r.envelopeId;
+    }
     const colOptions = (role) => `<option value="-1">—</option>${L.header.map((h, i) => `<option value="${i}" ${L.columns[role] === i ? 'selected' : ''}>${esc(h || `Column ${i + 1}`)}</option>`).join('')}`;
     const how = L.preset ? `Recognised a <b>${esc(L.presetName)}</b> export.`
       : acct && acct.csvLayout && acct.csvLayout.signature === L.signature ? 'Using the layout from last time.'
@@ -2749,6 +2804,103 @@
     }
   });
 
+  // Payees page
+  const payeeSelection = new Set();
+  function ruleText(r) {
+    const env = r.envelopeId && budget.envelopes.find((e) => e.id === r.envelopeId);
+    const what = [r.rename ? `rename to <b>${esc(r.rename)}</b>` : '', env ? `put in <b>${esc(env.name)}</b>` : ''].filter(Boolean).join(' and ');
+    return `Payee ${r.match === 'is' ? 'is' : 'contains'} "<b>${esc(r.text)}</b>" → ${what}`;
+  }
+  function renderPayees() {
+    const rules = budget.payeeRules || [];
+    $('#rules-list').innerHTML = rules.length
+      ? rules.map((r) => `<li><div class="tx-main"><button type="button" class="env-link" data-action="edit-payee-rule" data-id="${r.id}">${ruleText(r)}</button></div></li>`).join('')
+      : '<li class="tx-empty tx-meta">No rules yet. Make one from a payee below, or with + Rule.</li>';
+    $('#rules-count').textContent = rules.length ? `${rules.length} rule${rules.length === 1 ? '' : 's'}` : '';
+    $('#apply-rules').hidden = !rules.length;
+    const all = B.payeeList(budget);
+    const q = $('#payee-q').value.trim().toLowerCase();
+    const shown = (q ? all.filter((p) => p.name.toLowerCase().includes(q)) : all).slice(0, 400);
+    const envName = (id) => (budget.envelopes.find((e) => e.id === id) || {}).name || '';
+    for (const n of [...payeeSelection]) if (!all.some((p) => p.name === n)) payeeSelection.delete(n);
+    $('#payee-count').textContent = `${all.length} payee${all.length === 1 ? '' : 's'}${q ? ` · ${shown.length} shown` : ''}`;
+    $('#payee-rows').innerHTML = shown.length ? shown.map((p) => `<tr>
+      <td class="sel"><input type="checkbox" data-payee-sel="${esc(p.name)}" ${payeeSelection.has(p.name) ? 'checked' : ''} aria-label="Select ${esc(p.name)}"></td>
+      <td><button type="button" class="env-link" data-action="payee-transactions" data-payee="${esc(p.name)}" title="See its transactions">${esc(p.name)}</button>${p.rule ? ' <span class="stamp shared">Rule</span>' : ''}
+        <div class="payee-meta tx-meta">${p.count}× · ${esc(envName(p.envelopeId) || 'no envelope')} · ${esc(p.last)}</div></td>
+      <td class="num">${p.count}</td>
+      <td class="num ${p.total > 0 ? 'in' : ''}">${esc(money(p.total))}</td>
+      <td>${esc(envName(p.envelopeId))}</td>
+      <td class="tx-meta">${esc(p.last)}</td>
+      <td class="num actions"><button type="button" class="btn sm" data-action="rename-payee" data-payee="${esc(p.name)}">Rename</button>
+        <button type="button" class="btn sm" ${p.rule ? `data-action="edit-payee-rule" data-id="${p.rule}"` : `data-action="new-payee-rule" data-payee="${esc(p.name)}"`}>${p.rule ? 'Rule' : '+ Rule'}</button></td>
+    </tr>`).join('') : '<tr><td colspan="7" class="empty">No payees match.</td></tr>';
+    const n = payeeSelection.size;
+    $('#payee-merge').hidden = n < 2;
+    $('#payee-merge-text').textContent = `${n} selected`;
+  }
+  $('#payee-q').addEventListener('input', () => renderPayees());
+  document.addEventListener('change', (ev) => {
+    const cb = ev.target.closest && ev.target.closest('[data-payee-sel]');
+    if (!cb) return;
+    if (cb.checked) payeeSelection.add(cb.dataset.payeeSel); else payeeSelection.delete(cb.dataset.payeeSel);
+    renderPayees();
+  });
+
+  let editingRuleId = null;
+  function openRule(id, payee = '') {
+    const r = id ? (budget.payeeRules || []).find((x) => x.id === id) : null;
+    editingRuleId = r ? r.id : null;
+    const f = $('#rule-form');
+    f.reset();
+    $('#rule-error').hidden = true;
+    $('#rule-title').textContent = r ? 'Payee rule' : 'New payee rule';
+    f.envelopeId.innerHTML = `<option value="">Don't change the envelope</option>${budget.envelopes.map((e) => `<option value="${e.id}">${esc(e.group)} · ${esc(e.name)}</option>`).join('')}`;
+    f.match.value = r ? r.match : payee ? 'is' : 'contains';
+    f.text.value = r ? r.text : payee;
+    f.rename.value = r ? r.rename || '' : '';
+    f.envelopeId.value = r ? r.envelopeId || '' : (payee && (B.payeeList(budget).find((p) => p.name === payee) || {}).envelopeId) || '';
+    $('#rule-delete').hidden = !r;
+    rulePreview();
+    $('#rule-dialog').showModal();
+    setTimeout(() => (payee ? f.rename : f.text).focus(), 30);
+  }
+  function rulePreview() {
+    const f = $('#rule-form');
+    const text = f.text.value.trim().toLowerCase().replace(/\s+/g, ' ');
+    if (!text) { $('#rule-preview').textContent = ''; return; }
+    const hit = B.payeeList(budget).filter((p) => {
+      const k = p.name.toLowerCase().replace(/\s+/g, ' ');
+      return f.match.value === 'is' ? k === text : k.includes(text);
+    });
+    const count = hit.reduce((t, p) => t + p.count, 0);
+    $('#rule-preview').textContent = hit.length
+      ? `Matches ${hit.length} payee${hit.length === 1 ? '' : 's'} (${count} transaction${count === 1 ? '' : 's'}): ${hit.slice(0, 4).map((p) => p.name).join(', ')}${hit.length > 4 ? '…' : ''}`
+      : 'Matches no payee yet; it will apply to future imports.';
+  }
+  $('#rule-form').addEventListener('input', rulePreview);
+  $('#rule-form').addEventListener('change', rulePreview);
+  $('#rule-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    let res = null;
+    try {
+      B.savePayeeRule(structuredClone(budget), { id: editingRuleId, match: f.match.value, text: f.text.value, rename: f.rename.value, envelopeId: f.envelopeId.value });
+    } catch (err) {
+      $('#rule-error').textContent = err.message;
+      $('#rule-error').hidden = false;
+      return;
+    }
+    const ok = attempt(() => {
+      B.savePayeeRule(budget, { id: editingRuleId, match: f.match.value, text: f.text.value, rename: f.rename.value, envelopeId: f.envelopeId.value });
+      if (f.applyNow.checked) res = B.applyPayeeRules(budget);
+    }, 'Saved a payee rule');
+    if (ok) {
+      $('#rule-dialog').close();
+      if (res) toast(`Rule saved. Renamed ${res.renamed}, gave an envelope to ${res.categorised}.`, { action: 'Undo', onAction: undo });
+    }
+  });
+
   // Check accounts: repairs for data already imported.
   function toCategoriseEnvelopes() {
     return budget.envelopes.filter((e) => B.isInbox(e));
@@ -2829,7 +2981,7 @@
         if (onBudget && !envelopeId && !other && t.amount < 0) envelopeId = toCategorise();
         const tx = {
           id: newId(), date: t.date, payee: t.payee, note: t.note, amount: t.amount,
-          envelopeId, accountId: acct.id, importKey: `bank:${C.dupKey(t)}`,
+          envelopeId, accountId: acct.id, importKey: `bank:${C.dupKey({ ...t, payee: t.bankPayee || t.payee })}`,
         };
         budget.transactions.push(tx);
         if (other) {

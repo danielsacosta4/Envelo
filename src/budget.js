@@ -25,7 +25,7 @@
   };
 
   function create() {
-    return { version: 1, currency: 'EUR', accounts: [], envelopes: [], transactions: [], assignments: {}, recurring: [], hiddenGroups: [], goals: [], groupColors: {} };
+    return { version: 1, currency: 'EUR', accounts: [], envelopes: [], transactions: [], assignments: {}, recurring: [], hiddenGroups: [], goals: [], groupColors: {}, payeeRules: [] };
   }
 
   // Older budgets have no accounts. Put their transactions in one "Main account".
@@ -35,6 +35,7 @@
     if (!Array.isArray(b.hiddenGroups)) b.hiddenGroups = [];
     if (!Array.isArray(b.goals)) b.goals = [];
     if (!b.groupColors || typeof b.groupColors !== 'object' || Array.isArray(b.groupColors)) b.groupColors = {};
+    if (!Array.isArray(b.payeeRules)) b.payeeRules = [];
     if (b.transactions.some((t) => !t.accountId)) {
       const main = b.accounts[0] || addAccount(b, { name: 'Main account' });
       for (const t of b.transactions) if (!t.accountId) t.accountId = main.id;
@@ -636,6 +637,11 @@
   function payeeMemory(b, payee) {
     const key = String(payee || '').trim().toLowerCase();
     if (!key) return null;
+    // A payee rule with an envelope wins over what was used last time.
+    const rule = matchPayeeRule(b, payee);
+    if (rule && rule.envelopeId && b.envelopes.some((e) => e.id === rule.envelopeId)) {
+      return { kind: 'spend', envelopeId: rule.envelopeId, accountId: null, amount: null, rule: true };
+    }
     let best = null;
     for (const t of b.transactions) {
       if ((t.payee || '').trim().toLowerCase() !== key || t.transferId) continue;
@@ -648,6 +654,107 @@
       accountId: best.accountId,
       amount: Math.abs(best.amount),
     };
+  }
+
+  // Payees
+  //
+  // Payees are the names on transactions. Managing them means renaming or
+  // merging names everywhere, and rules:
+  //   { id, match: 'is'|'contains', text, rename, envelopeId }
+  // A rule renames payees that match (bank text like "COMPRA 4532 PINGO DOCE
+  // LISBOA" becomes "Pingo Doce") and/or gives them an envelope. Rules run on
+  // bank imports and can be applied to what is already there.
+  const payeeKey = (name) => String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+  // Every payee with how often it is used, the total, the last date and its
+  // usual envelope. Names differing only in case or spaces are one payee.
+  function payeeList(b) {
+    const map = new Map();
+    for (const t of b.transactions) {
+      const name = (t.payee || '').trim();
+      if (!name || t.transferId || name === 'Starting balance' || name === 'Reconciliation adjustment') continue;
+      const k = payeeKey(name);
+      let p = map.get(k);
+      if (!p) { p = { name, count: 0, total: 0, last: '', envelopes: new Map() }; map.set(k, p); }
+      p.count++;
+      p.total += t.amount;
+      if (t.date > p.last) { p.last = t.date; p.name = name; }
+      if (t.envelopeId) p.envelopes.set(t.envelopeId, (p.envelopes.get(t.envelopeId) || 0) + 1);
+    }
+    return [...map.values()].map((p) => {
+      const top = [...p.envelopes].sort((x, y) => y[1] - x[1])[0];
+      const rule = matchPayeeRule(b, p.name);
+      return { name: p.name, count: p.count, total: p.total, last: p.last, envelopeId: top ? top[0] : null, rule: rule ? rule.id : null };
+    }).sort((x, y) => y.count - x.count || x.name.localeCompare(y.name));
+  }
+
+  // Rename every transaction (and recurring rule) whose payee is one of `from`
+  // to `to`. Merging is renaming several names to one. Returns how many changed.
+  function renamePayees(b, from, to) {
+    const name = String(to || '').trim().slice(0, 80);
+    if (!name) throw new Error('Give the payee a name.');
+    const keys = new Set((Array.isArray(from) ? from : [from]).map(payeeKey));
+    let n = 0;
+    for (const t of b.transactions) {
+      if (t.transferId || !keys.has(payeeKey(t.payee)) || t.payee === name) continue;
+      t.payee = name;
+      n++;
+    }
+    for (const r of b.recurring || []) if (keys.has(payeeKey(r.payee))) r.payee = name;
+    return n;
+  }
+
+  function normalizePayeeRule(b, r) {
+    const text = String(r.text || '').trim();
+    if (!text) throw new Error('Say what the payee contains or is.');
+    if (!['is', 'contains'].includes(r.match)) throw new Error('Pick how the rule matches.');
+    const rename = String(r.rename || '').trim().slice(0, 80) || null;
+    const envelopeId = r.envelopeId && b.envelopes.some((e) => e.id === r.envelopeId) ? r.envelopeId : null;
+    if (!rename && !envelopeId) throw new Error('A rule needs a new name, an envelope or both.');
+    return { id: r.id || newId(), match: r.match, text, rename, envelopeId };
+  }
+  function savePayeeRule(b, r) {
+    if (!Array.isArray(b.payeeRules)) b.payeeRules = [];
+    const rule = normalizePayeeRule(b, r);
+    const i = b.payeeRules.findIndex((x) => x.id === rule.id);
+    if (i === -1) b.payeeRules.push(rule); else b.payeeRules[i] = rule;
+    return rule;
+  }
+  function removePayeeRule(b, id) {
+    b.payeeRules = (b.payeeRules || []).filter((r) => r.id !== id);
+  }
+  // The first rule that matches a payee name.
+  function matchPayeeRule(b, payee) {
+    const k = payeeKey(payee);
+    if (!k) return null;
+    return (b.payeeRules || []).find((r) => (r.match === 'is' ? payeeKey(r.text) === k : k.includes(payeeKey(r.text)))) || null;
+  }
+  // What a rule makes of a bank row or transaction: { payee, envelopeId }.
+  function applyPayeeRule(b, payee) {
+    const rule = matchPayeeRule(b, payee);
+    if (!rule) return { payee, envelopeId: null, rule: null };
+    const envelopeId = rule.envelopeId && b.envelopes.some((e) => e.id === rule.envelopeId) ? rule.envelopeId : null;
+    return { payee: rule.rename || payee, envelopeId, rule };
+  }
+  // Run the rules over existing transactions: rename matches, and give an
+  // envelope to spending that has none yet (in "To categorise"). Spending
+  // already in an envelope keeps it unless `recategorise` is set.
+  function applyPayeeRules(b, { recategorise = false } = {}) {
+    let renamed = 0;
+    let categorised = 0;
+    for (const t of b.transactions) {
+      if (t.transferId || !t.payee) continue;
+      const r = applyPayeeRule(b, t.payee);
+      if (!r.rule) continue;
+      if (r.payee !== t.payee) { t.payee = r.payee; renamed++; }
+      const env = b.envelopes.find((e) => e.id === t.envelopeId);
+      if (r.envelopeId && t.amount < 0 && isOnBudget(b, t.accountId) && t.envelopeId !== r.envelopeId
+        && (!env || isInbox(env) || recategorise)) {
+        t.envelopeId = r.envelopeId;
+        categorised++;
+      }
+    }
+    return { renamed, categorised };
   }
 
   // Find transactions. q matches payee, note, envelope, account or amount.
@@ -1045,6 +1152,7 @@
       hiddenGroups: Array.isArray(obj.hiddenGroups) ? obj.hiddenGroups : [],
       goals: Array.isArray(obj.goals) ? obj.goals : [],
       groupColors: obj.groupColors && typeof obj.groupColors === 'object' && !Array.isArray(obj.groupColors) ? obj.groupColors : {},
+      payeeRules: Array.isArray(obj.payeeRules) ? obj.payeeRules : [],
     });
   }
 
@@ -1477,6 +1585,7 @@
     updateEnvelope, deleteEnvelope, updateTransaction, transactionKind,
     moveGroup, moveEnvelope, childrenOf, updateRecurring, upcoming,
     accountTransactionsToDelete, deleteAccountTransactions, isInbox,
+    payeeList, renamePayees, savePayeeRule, removePayeeRule, matchPayeeRule, applyPayeeRule, applyPayeeRules,
     matchTransfers, findTransferPairs, linkTransfer, startingBalanceOverlap, fixStartingBalance,
     addAccount, updateAccount, deleteAccount, accountBalance, reconcileAccount, ensureAccounts,
     isOnBudget, transferNeedsEnvelope, countsAsIncome, isHidden, setGroupHidden, accountRegister,

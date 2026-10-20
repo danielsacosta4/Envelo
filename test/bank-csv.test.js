@@ -114,3 +114,10 @@ test('Revolut exports in other languages: reverted rows skipped, fees counted', 
   assert.deepEqual(transactions.map((t) => [t.date, t.amount]), [['2026-10-01', 10000], ['2026-10-03', -2004]]);
   assert.deepEqual(C.endBalance(transactions), { date: '2026-10-03', balance: 7996 });
 });
+
+test('an imported row stays a duplicate after its payee is renamed', () => {
+  const row = { date: '2026-10-05', amount: -700, payee: 'COMPRA 1234 PINGO DOCE' };
+  const existing = [{ ...row, payee: 'Pingo Doce', importKey: `bank:${C.dupKey(row)}` }];
+  assert.equal(C.markDuplicates([row], existing)[0].duplicate, true);
+  assert.equal(C.markDuplicates([row, row], existing)[1].duplicate, false);
+});

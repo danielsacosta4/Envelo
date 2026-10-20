@@ -319,9 +319,10 @@
   function markDuplicates(incoming, existing) {
     const have = new Map();
     for (const t of existing) {
-      const k = dupKey(t);
+      // An imported transaction remembers the bank's own row, so renaming its
+      // payee (or a payee rule) does not make the row look new next time.
+      const k = String(t.importKey || '').startsWith('bank:') ? t.importKey.slice(5) : dupKey(t);
       have.set(k, (have.get(k) || 0) + 1);
-      if (t.importKey) have.set(t.importKey, (have.get(t.importKey) || 0) + 1);
     }
     return incoming.map((t) => {
       const k = dupKey(t);

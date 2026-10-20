@@ -833,3 +833,25 @@ input.amt.pulse { animation: pulse-in .5s cubic-bezier(.3,1.5,.5,1); }
 
 .over-line { margin-top: 8px; font: 700 12.5px/1.35 var(--sans); color: #ffb4a8; }
 .over-line .link { color: #fff; }
+
+/* Payees */
+.payee-bar { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; }
+.payee-bar input { max-width: 360px; }
+.merge-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 10px 12px; margin-bottom: 10px; border: 3px solid var(--edge); background: var(--yellow); color: #161616; font-weight: 800; }
+.payee-table { width: 100%; border-collapse: collapse; }
+.payee-table th, .payee-table td { padding: 8px 8px; border-bottom: 2px dashed var(--rule); text-align: left; vertical-align: middle; }
+.payee-table th { font: 900 11px/1.2 var(--sans); letter-spacing: .1em; text-transform: uppercase; border-bottom: 3px solid var(--edge); }
+.payee-table .num { text-align: right; white-space: nowrap; }
+.payee-table .num.in { color: var(--good); }
+.payee-table .sel { width: 28px; }
+.payee-meta { display: none; }
+.payee-table .actions { display: flex; gap: 6px; justify-content: flex-end; }
+@media (max-width: 720px) {
+  .payee-table thead { display: none; }
+  .payee-table tr { display: grid; grid-template-columns: 28px 1fr auto; gap: 2px 8px; padding: 8px 0; border-bottom: 2px dashed var(--rule); }
+  .payee-table td { border: none; padding: 2px 0; }
+  .payee-table td:nth-child(4) { grid-column: 3; grid-row: 1; }
+  .payee-table td:nth-child(3), .payee-table td:nth-child(5), .payee-table td:nth-child(6) { display: none; }
+  .payee-table .payee-meta { display: block; }
+  .payee-table .actions { grid-column: 2 / -1; justify-content: flex-start; }
+}

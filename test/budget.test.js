@@ -741,3 +741,35 @@ test('uncategorised imported spending comes off Ready to Assign at once', () => 
   assert.equal(B.readyToAssign(b, '2026-10'), 70000);
   assert.equal(B.readyToAssign(b, '2026-11'), 65000);
 });
+
+test('payees can be listed, renamed, merged and given rules', () => {
+  const { b, food, rent } = sample();
+  const acct = B.addAccount(b, { name: 'Bank', balance: 0 });
+  const inbox = B.addEnvelope(b, { name: '📥 To categorise', group: 'Imported' });
+  const tx = (payee, amount, envelopeId, date = '2026-10-05') => B.addTransaction(b, { kind: 'spend', date, payee, amount, envelopeId, accountId: acct.id });
+  tx('Pingo Doce', 1000, food.id, '2026-10-01');
+  tx('pingo  doce ', 500, food.id, '2026-10-02');
+  tx('COMPRA 1234 PINGO DOCE LISBOA', 700, inbox.id);
+  tx('Landlord', 50000, rent.id);
+  const list = B.payeeList(b);
+  assert.deepEqual(list.map((p) => [p.name, p.count]), [['pingo  doce ', 2], ['COMPRA 1234 PINGO DOCE LISBOA', 1], ['Landlord', 1]].map(([n, c]) => [n.trim(), c]));
+  assert.equal(list[0].envelopeId, food.id);
+  // Rename (case-insensitive) and merge
+  assert.equal(B.renamePayees(b, ['Pingo Doce'], 'Pingo Doce'), 1);
+  assert.equal(B.renamePayees(b, ['COMPRA 1234 PINGO DOCE LISBOA', 'Pingo Doce'], 'Supermarket'), 3);
+  assert.equal(B.payeeList(b).length, 2);
+  // Rules
+  assert.throws(() => B.savePayeeRule(b, { match: 'contains', text: 'x' }), /needs a new name/);
+  const rule = B.savePayeeRule(b, { match: 'contains', text: 'pingo doce', rename: 'Pingo Doce', envelopeId: food.id });
+  tx('COMPRA 9 PINGO DOCE PORTO', 300, inbox.id);
+  tx('Pingo Doce', 200, rent.id);
+  assert.deepEqual(B.applyPayeeRule(b, 'compra 5 PINGO DOCE x'), { payee: 'Pingo Doce', envelopeId: food.id, rule });
+  assert.equal(B.payeeMemory(b, 'COMPRA 77 PINGO DOCE').envelopeId, food.id);
+  assert.deepEqual(B.applyPayeeRules(b), { renamed: 1, categorised: 1 });
+  // Spending already in another envelope keeps it unless asked.
+  assert.equal(b.transactions.find((t) => t.amount === -200).envelopeId, rent.id);
+  assert.deepEqual(B.applyPayeeRules(b, { recategorise: true }), { renamed: 0, categorised: 1 });
+  B.removePayeeRule(b, rule.id);
+  assert.equal(B.matchPayeeRule(b, 'Pingo Doce'), null);
+  assert.deepEqual(B.fromJSON(JSON.parse(JSON.stringify(b))).payeeRules, []);
+});
