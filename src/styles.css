@@ -855,3 +855,6 @@ input.amt.pulse { animation: pulse-in .5s cubic-bezier(.3,1.5,.5,1); }
   .payee-table .payee-meta { display: block; }
   .payee-table .actions { grid-column: 2 / -1; justify-content: flex-start; }
 }
+
+/* Month fields: a month list and a year list side by side */
+.month-pick { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 8px; }

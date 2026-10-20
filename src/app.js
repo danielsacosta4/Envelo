@@ -2,6 +2,51 @@
   const B = Budget;
 
   const $ = (sel) => document.querySelector(sel);
+
+  // Month fields. <input type="month"> is a plain text box in some browsers
+  // (Firefox on desktop, older Safari), where "12" is not a month. Each one
+  // becomes a month list and a year list; the original input stays (hidden)
+  // and its value reads and writes "YYYY-MM" through them, so code that uses
+  // form.field.value is unchanged.
+  function monthPickers() {
+    const year = new Date().getFullYear();
+    const names = Array.from({ length: 12 }, (_, i) => new Date(2000, i, 1).toLocaleString(undefined, { month: 'long' }));
+    document.querySelectorAll('input[type="month"]').forEach((input) => {
+      const box = document.createElement('span');
+      box.className = 'month-pick';
+      const m = document.createElement('select');
+      m.setAttribute('aria-label', 'Month');
+      m.innerHTML = `<option value="">—</option>${names.map((n, i) => `<option value="${String(i + 1).padStart(2, '0')}">${n}</option>`).join('')}`;
+      const y = document.createElement('select');
+      y.setAttribute('aria-label', 'Year');
+      const years = [];
+      for (let k = year - 40; k <= year + 40; k++) years.push(k);
+      y.innerHTML = `<option value="">—</option>${years.map((k) => `<option value="${k}">${k}</option>`).join('')}`;
+      input.type = 'hidden';
+      input.after(box);
+      box.append(m, y);
+      // Picking a month alone fills in the year (this year, or next if the month has passed).
+      m.addEventListener('change', () => {
+        if (m.value && !y.value) {
+          const now = new Date();
+          y.value = String(Number(m.value) < now.getMonth() + 1 ? year + 1 : year);
+        }
+        if (!m.value) y.value = '';
+      });
+      y.addEventListener('change', () => { if (y.value && !m.value) m.value = '01'; if (!y.value) m.value = ''; });
+      Object.defineProperty(input, 'value', {
+        configurable: true,
+        get: () => (m.value && y.value ? `${y.value}-${m.value}` : ''),
+        set: (v) => {
+          const match = /^(\d{4})-(\d{2})/.exec(String(v || ''));
+          if (match && !y.querySelector(`option[value="${match[1]}"]`)) y.insertAdjacentHTML('beforeend', `<option value="${match[1]}">${match[1]}</option>`);
+          y.value = match ? match[1] : '';
+          m.value = match ? match[2] : '';
+        },
+      });
+    });
+  }
+  monthPickers();
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
   ));
