@@ -69,7 +69,7 @@ test('N26 preset and a remembered layout', () => {
   const saved = C.layoutToSave(layout);
   const again = C.analyze(csv, saved);
   assert.deepEqual(again.columns, layout.columns);
-  assert.deepEqual(C.toTransactions(again).transactions[0], { line: 1, date: '2026-10-05', payee: 'Pingo Doce', note: '', amount: -1230 });
+  assert.deepEqual(C.toTransactions(again).transactions[0], { line: 1, date: '2026-10-05', payee: 'Pingo Doce', note: '', amount: -1230, balance: null });
 });
 
 test('duplicates already in the account are marked, extra identical rows are not', () => {
@@ -89,4 +89,14 @@ test('a headerless file is read from its values', () => {
   const { transactions } = C.toTransactions(layout);
   assert.deepEqual(transactions.map((t) => t.amount), [-2340, 145000]);
   assert.equal(transactions[0].payee, 'Lidl');
+});
+
+test('a balance column is found and gives the bank balance after the newest row', () => {
+  const text = 'Date;Description;Amount;Balance\n03-10-2026;Shop;-10,00;90,00\n01-10-2026;Salary;100,00;100,00\n';
+  const L = C.analyze(text);
+  assert.equal(L.columns.amount, 2);
+  assert.equal(L.columns.balance, 3);
+  const { transactions } = C.toTransactions(L);
+  assert.deepEqual(C.endBalance(transactions), { date: '2026-10-03', balance: 9000 });
+  assert.equal(C.endBalance([{ date: '2026-10-01', balance: null }]), null);
 });

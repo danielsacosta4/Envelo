@@ -238,6 +238,12 @@
       for (const r of rows.slice(0, 200)) for (const k of [columns.amount, columns.debit, columns.credit]) if (k >= 0 && r[k]) amountVals.push(r[k]);
       decimal = detectDecimal(amountVals);
     }
+    // A running balance column, when the bank gives one, lets the import check
+    // that Envelo ends up with the same balance as the bank.
+    if (columns.balance === undefined) {
+      const used = new Set(Object.values(columns));
+      columns = { ...columns, balance: hasHeader ? lower.findIndex((n, k) => !used.has(k) && BALANCE.test(n) && !DATEISH.test(n)) : -1 };
+    }
     return { delimiter, header, rows, hasHeader, signature, preset: preset ? preset.id : null, presetName: preset ? preset.name : null, columns, dateFormat: dateFormat || 'DD-MM-YYYY', decimal };
   }
 
@@ -267,15 +273,29 @@
         return;
       }
       if (amount === 0) return;
+      const balance = c.balance >= 0 && r[c.balance] ? parseAmount(r[c.balance], decimal) : NaN;
       out.push({
         line: i + 1,
         date,
         payee: c.payee >= 0 ? (r[c.payee] || '').slice(0, 80) : '',
         note: c.note >= 0 ? (r[c.note] || '').slice(0, 140) : '',
         amount,
+        balance: Number.isNaN(balance) ? null : balance,
       });
     });
     return { transactions: out, errors };
+  }
+
+  // The balance the bank shows after the newest row: { date, balance } or null.
+  // Files list newest first or oldest first; the order tells which row is last.
+  function endBalance(transactions) {
+    const withBal = transactions.filter((t) => t.balance !== null && t.balance !== undefined);
+    if (!withBal.length) return null;
+    const newestFirst = withBal[0].date > withBal[withBal.length - 1].date;
+    const latest = withBal.reduce((d, t) => (t.date > d ? t.date : d), withBal[0].date);
+    const onLatest = withBal.filter((t) => t.date === latest);
+    const row = newestFirst ? onLatest[0] : onLatest[onLatest.length - 1];
+    return { date: row.date, balance: row.balance };
   }
 
   // Key used to recognise a transaction already in the budget.
@@ -309,7 +329,7 @@
 
   const api = {
     parseRows, detectDelimiter, parseDate, detectDateFormat, detectDecimal, parseAmount, guessColumns,
-    analyze, toTransactions, markDuplicates, dupKey, layoutToSave, DATE_FORMATS, PRESETS,
+    analyze, toTransactions, endBalance, markDuplicates, dupKey, layoutToSave, DATE_FORMATS, PRESETS,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BankCsv = api;

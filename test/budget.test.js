@@ -659,3 +659,47 @@ test('future transactions wait for their date and count nowhere until then', () 
   assert.equal(b.recurring.length, 1);
   assert.throws(() => B.addRecurring(b, { kind: 'transfer', freq: 'monthly', amount: 1, next: '2026-12-01' }), /cannot repeat/);
 });
+
+test('transfers imported from two bank files are found and linked', () => {
+  const { b, food } = sample();
+  const main = B.addAccount(b, { name: 'Main', balance: 0 });
+  const save = B.addAccount(b, { name: 'Savings', balance: 0 });
+  const t = (accountId, date, amount, envelopeId = null) => {
+    const tx = { id: `${accountId}-${date}-${amount}`, date, payee: 'x', note: '', amount, envelopeId, accountId, importKey: 'bank:k' };
+    b.transactions.push(tx);
+    return tx;
+  };
+  t(main.id, '2026-10-01', 300000);
+  const out = t(main.id, '2026-10-03', -50000, food.id);
+  const inn = t(save.id, '2026-10-05', 50000);
+  t(save.id, '2026-10-30', 2000); // too far from anything
+  assert.equal(B.readyToAssign(b, '2026-10'), 350000 + 2000);
+  const pairs = B.findTransferPairs(b);
+  assert.equal(pairs.length, 1);
+  assert.deepEqual([pairs[0].outId, pairs[0].inId], [out.id, inn.id]);
+  B.linkTransfer(b, out.id, inn.id);
+  assert.equal(B.readyToAssign(b, '2026-10'), 302000);
+  assert.equal(B.envelopeStatus(b, food.id, '2026-10').activity, 0);
+  assert.equal(B.findTransferPairs(b).length, 0);
+});
+
+test('history imported before a starting balance is not counted twice', () => {
+  const b = B.create();
+  const acct = B.addAccount(b, { name: 'Bank', balance: 100000, date: '2026-10-20' });
+  const rows = [
+    { date: '2026-10-01', amount: 250000, payee: 'Salary' },
+    { date: '2026-10-10', amount: -40000, payee: 'Shop' },
+    { date: '2026-10-21', amount: -1000, payee: 'Cafe' },
+  ];
+  const o = B.startingBalanceOverlap(b, acct.id, rows);
+  assert.equal(o.count, 2);
+  assert.equal(o.overlap, 210000);
+  assert.equal(o.newAmount, -110000);
+  assert.equal(o.newDate, '2026-09-30');
+  for (const r of rows) b.transactions.push({ id: r.payee, ...r, note: '', envelopeId: null, accountId: acct.id, importKey: `bank:${r.payee}` });
+  assert.equal(B.accountBalance(b, acct.id), 309000);
+  B.fixStartingBalance(b, acct.id);
+  // Back to the bank's balance on the 20th, minus the coffee after it.
+  assert.equal(B.accountBalance(b, acct.id), 99000);
+  assert.equal(B.startingBalanceOverlap(b, acct.id), null);
+});

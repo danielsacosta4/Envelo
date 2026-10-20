@@ -364,6 +364,88 @@
       .reduce((sum, t) => sum + t.amount, 0);
   }
 
+  // Import checks.
+  //
+  // A transfer between two of your accounts, imported from two bank files,
+  // arrives as money out of one account and money into the other. Unlinked,
+  // the money in counts as income (Ready to Assign goes up) while the money
+  // out is spending. These find such pairs so they can become one transfer.
+  const dayDiff = (a, c) => Math.abs(Date.parse(`${a}T00:00:00Z`) - Date.parse(`${c}T00:00:00Z`)) / 86400000;
+  const isPlain = (b, t) => !t.transferId && !t.splitId && !t.recurringId && t.payee !== 'Starting balance'
+    && t.payee !== 'Reconciliation adjustment' && isOnBudget(b, t.accountId);
+
+  // Candidate pairs among `incoming` and `outgoing` (transactions or rows with
+  // accountId, date, amount). Each one is used at most once, closest dates first.
+  function matchTransfers(b, incoming, outgoing, days = 4) {
+    const pairs = [];
+    for (const inT of incoming) {
+      for (const outT of outgoing) {
+        if (inT.amount <= 0 || outT.amount !== -inT.amount || inT.accountId === outT.accountId) continue;
+        const d = dayDiff(inT.date, outT.date);
+        if (d <= days) pairs.push({ inT, outT, d });
+      }
+    }
+    pairs.sort((x, y) => x.d - y.d);
+    const used = new Set();
+    return pairs.filter((p) => {
+      if (used.has(p.inT) || used.has(p.outT)) return false;
+      used.add(p.inT); used.add(p.outT);
+      return true;
+    });
+  }
+
+  // Pairs already in the budget: [{ outId, inId, amount, outAccountId, inAccountId, outDate, inDate }].
+  function findTransferPairs(b, days = 4) {
+    const plain = b.transactions.filter((t) => isPlain(b, t));
+    return matchTransfers(b, plain.filter((t) => t.amount > 0), plain.filter((t) => t.amount < 0), days)
+      .map(({ inT, outT }) => ({ outId: outT.id, inId: inT.id, amount: inT.amount, outAccountId: outT.accountId, inAccountId: inT.accountId, outDate: outT.date, inDate: inT.date }));
+  }
+
+  // Turn two existing transactions into the two legs of a transfer.
+  function linkTransfer(b, outId, inId) {
+    const out = b.transactions.find((t) => t.id === outId);
+    const inn = b.transactions.find((t) => t.id === inId);
+    if (!out || !inn || out.amount !== -inn.amount || out.accountId === inn.accountId) throw new Error('These do not make a transfer.');
+    if (!isOnBudget(b, out.accountId) || !isOnBudget(b, inn.accountId)) throw new Error('Only transfers between budget accounts can be linked.');
+    const transferId = newId();
+    Object.assign(out, { transferId, toAccountId: inn.accountId, envelopeId: null });
+    Object.assign(inn, { transferId, toAccountId: out.accountId, envelopeId: null });
+  }
+
+  // An account created with today's balance, then given its history from a
+  // bank file, counts that history twice: the starting balance already holds
+  // it. The fix moves the starting balance to before the first imported row
+  // and lowers it by what those rows add up to, so today's balance stays put.
+  //   extra: rows about to be imported (not yet in the budget)
+  // Returns null when nothing overlaps.
+  function startingBalanceOverlap(b, accountId, extra = []) {
+    const start = b.transactions
+      .filter((t) => t.accountId === accountId && t.payee === 'Starting balance' && !t.transferId)
+      .sort((x, y) => (x.date < y.date ? -1 : 1))[0];
+    if (!start) return null;
+    const imported = b.transactions.filter((t) => t.accountId === accountId && t.id !== start.id
+      && String(t.importKey || '').startsWith('bank:') && t.date <= start.date);
+    const rows = [...imported, ...extra.filter((t) => t.date <= start.date)];
+    if (!rows.length) return null;
+    const overlap = rows.reduce((sum, t) => sum + t.amount, 0);
+    const first = rows.reduce((d, t) => (t.date < d ? t.date : d), rows[0].date);
+    const before = new Date(`${first}T00:00:00Z`);
+    before.setUTCDate(before.getUTCDate() - 1);
+    return {
+      startId: start.id, startDate: start.date, startAmount: start.amount,
+      count: rows.length, overlap, newAmount: start.amount - overlap, newDate: before.toISOString().slice(0, 10),
+    };
+  }
+
+  function fixStartingBalance(b, accountId, extra = []) {
+    const o = startingBalanceOverlap(b, accountId, extra);
+    if (!o) return null;
+    const start = b.transactions.find((t) => t.id === o.startId);
+    start.amount = o.newAmount;
+    start.date = o.newDate;
+    return o;
+  }
+
   // Every transaction in an account, oldest first, with the balance after it.
   function accountRegister(b, id) {
     const rows = b.transactions
@@ -1357,6 +1439,7 @@
     setTarget, normalizeTarget, fundAllTargets, weekdaysInMonth,
     updateEnvelope, deleteEnvelope, updateTransaction, transactionKind,
     moveGroup, moveEnvelope, childrenOf, updateRecurring, upcoming,
+    matchTransfers, findTransferPairs, linkTransfer, startingBalanceOverlap, fixStartingBalance,
     addAccount, updateAccount, deleteAccount, accountBalance, reconcileAccount, ensureAccounts,
     isOnBudget, transferNeedsEnvelope, countsAsIncome, isHidden, setGroupHidden, accountRegister,
     addRecurring, removeRecurring, applyRecurring, nextRecurringDate, report,

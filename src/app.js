@@ -1452,6 +1452,7 @@
       case 'pick-sticker': toggleStickers(btn.closest('form')); break;
       case 'set-sticker': setSticker(btn.closest('form'), btn.dataset.emoji || ''); break;
       case 'reorder': reordering = !reordering; render(); break;
+      case 'check-accounts': openCheckAccounts(); break;
       case 'move-group': if (attempt(() => B.moveGroup(budget, btn.dataset.group, Number(btn.dataset.dir)))) Sounds.play('tick'); break;
       case 'move-env': if (attempt(() => B.moveEnvelope(budget, btn.dataset.id, Number(btn.dataset.dir)))) Sounds.play('tick'); break;
       case 'toggle-group': toggleCollapsed(btn.dataset.group); render(); break;
@@ -2538,6 +2539,21 @@
     const marked = C.markDuplicates(transactions, budget.transactions.filter((t) => t.accountId === csv.accountId));
     csv.rows = marked;
     const fresh = marked.filter((t) => !t.duplicate);
+    // Rows that mirror a transaction in another account are a transfer.
+    if (onBudget) {
+      const rows = fresh.map((t) => ({ ...t, accountId: csv.accountId, row: t }));
+      const others = budget.transactions.filter((t) => t.accountId !== csv.accountId && !t.transferId && !t.splitId
+        && t.payee !== 'Starting balance' && t.payee !== 'Reconciliation adjustment' && B.isOnBudget(budget, t.accountId));
+      const pairs = [
+        ...B.matchTransfers(budget, rows.filter((r) => r.amount > 0), others.filter((t) => t.amount < 0)).map((p) => [p.inT, p.outT]),
+        ...B.matchTransfers(budget, others.filter((t) => t.amount > 0), rows.filter((r) => r.amount < 0)).map((p) => [p.outT, p.inT]),
+      ];
+      for (const [r, other] of pairs) {
+        r.row.matchId = other.id;
+        if (r.row.envelopeId === undefined) r.row.envelopeId = '__transfer';
+      }
+    }
+    const acctName = (id) => (budget.accounts.find((a) => a.id === id) || {}).name || 'another account';
     const colOptions = (role) => `<option value="-1">—</option>${L.header.map((h, i) => `<option value="${i}" ${L.columns[role] === i ? 'selected' : ''}>${esc(h || `Column ${i + 1}`)}</option>`).join('')}`;
     const how = L.preset ? `Recognised a <b>${esc(L.presetName)}</b> export.`
       : acct && acct.csvLayout && acct.csvLayout.signature === L.signature ? 'Using the layout from last time.'
@@ -2546,8 +2562,12 @@
       const mem = B.payeeMemory(budget, t.payee);
       const pick = t.envelopeId !== undefined ? t.envelopeId : mem && mem.envelopeId && (t.amount < 0) === (mem.kind === 'spend') ? mem.envelopeId : '';
       t.envelopeId = pick;
-      const first = t.amount > 0 ? 'Ready to Assign' : 'To categorise';
-      return `<option value="">${first}</option>${budget.envelopes.filter((e) => !B.isHidden(budget, e) || e.id === pick).map((e) => `<option value="${e.id}" ${e.id === pick ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}`;
+      const first = t.amount > 0 ? 'Income → Ready to Assign' : 'To categorise';
+      const other = t.matchId && budget.transactions.find((x) => x.id === t.matchId);
+      const transfer = other ? `<option value="__transfer" ${pick === '__transfer' ? 'selected' : ''}>↔ Transfer ${t.amount > 0 ? 'from' : 'to'} ${esc(acctName(other.accountId))}</option>` : '';
+      return `${transfer}<option value="" ${pick === '' ? 'selected' : ''}>${first}</option>
+        <option value="__skip" ${pick === '__skip' ? 'selected' : ''}>Don't import</option>
+        ${budget.envelopes.filter((e) => !B.isHidden(budget, e) || e.id === pick).map((e) => `<option value="${e.id}" ${e.id === pick ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}`;
     };
     const shown = marked.slice(0, 1000);
     $('#csv-body').innerHTML = `<h2>Import into ${esc(acct ? acct.name : '')}</h2>${csvSteps(1)}
@@ -2564,6 +2584,7 @@
           <td>${esc(t.date)}</td><td>${esc(t.payee)}</td><td class="num">${esc(money(t.amount))}</td>
           ${onBudget ? `<td>${t.duplicate ? '' : `<select data-csv-env="${i}">${envOpts(t)}</select>`}</td>` : ''}</tr>`).join('')}</tbody>
       </table></div>
+      <div id="csv-summary" class="csv-summary"></div>
       <div class="row">
         <button type="button" class="btn primary" id="csv-go" ${fresh.length ? '' : 'disabled'}>Import ${fresh.length} transaction${fresh.length === 1 ? '' : 's'}</button>
         <button type="button" class="btn" id="csv-back">Choose another file</button>
@@ -2580,7 +2601,11 @@
     $('#csv-decimal').addEventListener('change', (ev) => { L.decimal = ev.target.value; renderCsv(); });
     document.querySelectorAll('[data-csv-env]').forEach((sel) => sel.addEventListener('change', () => {
       csv.rows[Number(sel.dataset.csvEnv)].envelopeId = sel.value;
+      renderCsvSummary();
     }));
+    csv.fixStart = true;
+    csv.endBalance = C.endBalance(transactions);
+    renderCsvSummary();
     $('#csv-back').addEventListener('click', () => { csv.layout = null; renderCsv(); });
     $('#csv-go').addEventListener('click', importCsvRows);
   }
@@ -2602,29 +2627,141 @@
     }
   }
 
+  // What the import will do, before it does it: money into Ready to Assign,
+  // transfers found, history that overlaps the starting balance, and whether
+  // the balance will match the bank's.
+  function renderCsvSummary() {
+    const box = $('#csv-summary');
+    if (!box) return;
+    const acct = budget.accounts.find((a) => a.id === csv.accountId);
+    if (!acct) return;
+    const onBudget = !acct.offBudget;
+    const rows = csv.rows.filter((t) => !t.duplicate && t.envelopeId !== '__skip');
+    const sum = (list) => list.reduce((t, r) => t + r.amount, 0);
+    const income = onBudget ? rows.filter((t) => t.amount > 0 && !t.envelopeId) : [];
+    const uncat = onBudget ? rows.filter((t) => t.amount < 0 && !t.envelopeId) : [];
+    const transfers = rows.filter((t) => t.envelopeId === '__transfer');
+    const overlap = B.startingBalanceOverlap(budget, acct.id, rows);
+    const items = [];
+    if (onBudget) {
+      items.push(`<li><b>${income.length ? `+${esc(money(sum(income)))}` : 'Nothing'}</b> to Ready to Assign${income.length ? ` from ${income.length} incoming payment${income.length === 1 ? '' : 's'}` : ''}.
+        ${income.length ? '<span class="hint">Refunds or money from your own accounts are not income: pick an envelope, a transfer or "Don\'t import" for those rows.</span>' : ''}</li>`);
+      if (uncat.length) items.push(`<li><b>${esc(money(sum(uncat)))}</b> to "To categorise" (${uncat.length} row${uncat.length === 1 ? '' : 's'}).
+        <span class="hint">No money is assigned there, so it shows as overspent and comes off Ready to Assign next month. Give these rows envelopes, or cover it from Ready to Assign.</span></li>`);
+    }
+    if (transfers.length) items.push(`<li><b>${transfers.length}</b> transfer${transfers.length === 1 ? '' : 's'} between your accounts recognised: not counted as income or spending.</li>`);
+    let warn = '';
+    if (overlap) {
+      warn = `<div class="csv-warn">
+        <p><b>${overlap.count} row${overlap.count === 1 ? ' is' : 's are'} dated on or before ${esc(fmtDay(overlap.startDate))}</b>, the day of this account's starting balance (${esc(money(overlap.startAmount))}).
+          That balance already includes ${overlap.count === 1 ? 'it' : 'them'}, so ${overlap.count === 1 ? 'it' : 'they'} would be counted twice${overlap.overlap > 0 ? ` and add ${esc(money(overlap.overlap))} too much` : ''}.</p>
+        <label class="check"><input type="checkbox" id="csv-fix-start" ${csv.fixStart ? 'checked' : ''}>
+          <span>Move the starting balance to ${esc(fmtDay(overlap.newDate))} and make it ${esc(money(overlap.newAmount))}, so the balance stays right</span></label>
+      </div>`;
+    }
+    let check = '';
+    const end = csv.endBalance;
+    if (end) {
+      let after = B.accountBalance(budget, acct.id, end.date) + sum(rows.filter((t) => t.date <= end.date));
+      // With the fix, the starting balance moves before the first row and changes amount.
+      if (overlap && csv.fixStart) after += overlap.newAmount - (overlap.startDate <= end.date ? overlap.startAmount : 0);
+      const diff = after - end.balance;
+      check = diff === 0
+        ? `<p class="csv-ok">✓ After the import, ${esc(acct.name)} shows ${esc(money(after))} on ${esc(fmtDay(end.date))}, the same as your bank file.</p>`
+        : `<div class="csv-warn"><p>Your bank file shows <b>${esc(money(end.balance))}</b> on ${esc(fmtDay(end.date))}; after this import Envelo would show <b>${esc(money(after))}</b> (${diff > 0 ? `${esc(money(diff))} too much` : `${esc(money(-diff))} too little`}).</p>
+          <p class="hint">Usually the starting balance or rows already entered by hand. After importing, use Reconcile on the account to set it to the bank's balance.</p></div>`;
+    }
+    box.innerHTML = `<h3 class="sub-h">What this import does</h3><ul class="csv-effects">${items.join('')}</ul>${warn}${check}`;
+    const cb = $('#csv-fix-start');
+    if (cb) cb.addEventListener('change', () => { csv.fixStart = cb.checked; renderCsvSummary(); });
+  }
+
+  // Check accounts: repairs for data already imported.
+  function toCategoriseEnvelopes() {
+    return budget.envelopes.filter((e) => /^(📥\s*)?To categorise$/.test(e.name));
+  }
+  function openCheckAccounts() {
+    const pairs = B.findTransferPairs(budget);
+    const overlaps = budget.accounts.map((a) => [a, B.startingBalanceOverlap(budget, a.id)]).filter(([, o]) => o);
+    const buckets = toCategoriseEnvelopes();
+    const acctName = (id) => (budget.accounts.find((a) => a.id === id) || {}).name || '?';
+    const txName = (id) => (budget.transactions.find((t) => t.id === id) || {}).payee || '';
+    const found = pairs.length + overlaps.length + (buckets.length > 1 ? 1 : 0);
+    $('#check-body').innerHTML = `<div class="stack"><h2>Check accounts</h2>
+      ${found ? '<p>Envelo found these. Untick anything that is not right, then fix.</p>' : '<p class="csv-ok">✓ Nothing to fix: no transfers counted as income, no history counted twice.</p>'}
+      ${overlaps.length ? `<h3 class="sub-h">History counted twice</h3>
+        ${overlaps.map(([a, o]) => `<label class="check"><input type="checkbox" data-fix-start="${a.id}" checked>
+          <span><b>${esc(a.name)}</b>: ${o.count} imported row${o.count === 1 ? '' : 's'} on or before the starting balance (${esc(money(o.startAmount))} on ${esc(fmtDay(o.startDate))}) add ${esc(money(o.overlap))}.
+          Fix: starting balance ${esc(money(o.newAmount))} on ${esc(fmtDay(o.newDate))}.</span></label>`).join('')}` : ''}
+      ${pairs.length ? `<h3 class="sub-h">Transfers between your accounts</h3>
+        <p class="hint">Money out of one account and the same amount into another within 4 days. Linked, it no longer counts as income and spending.</p>
+        <div class="table-wrap" style="max-height:40vh;overflow:auto"><table class="csv-preview"><thead><tr><th></th><th>From</th><th>To</th><th class="num">Amount</th></tr></thead><tbody>
+        ${pairs.map((p, i) => `<tr><td><input type="checkbox" data-fix-pair="${i}" checked aria-label="Link this transfer"></td>
+          <td>${esc(acctName(p.outAccountId))}<div class="tx-meta">${esc(p.outDate)} · ${esc(txName(p.outId))}</div></td>
+          <td>${esc(acctName(p.inAccountId))}<div class="tx-meta">${esc(p.inDate)} · ${esc(txName(p.inId))}</div></td>
+          <td class="num">${esc(money(p.amount))}</td></tr>`).join('')}
+        </tbody></table></div>` : ''}
+      ${buckets.length > 1 ? `<h3 class="sub-h">Duplicate envelopes</h3>
+        <label class="check"><input type="checkbox" id="fix-buckets" checked><span>Merge the ${buckets.length} "To categorise" envelopes into one.</span></label>` : ''}
+      <div class="row">
+        ${found ? '<button type="button" class="btn primary" id="check-go">Fix</button>' : ''}
+        <button type="button" class="btn" data-action="close-dialog">Close</button>
+      </div></div>`;
+    if (found) {
+      $('#check-go').addEventListener('click', () => {
+        const before = B.readyToAssign(budget, month);
+        const ok = attempt(() => {
+          document.querySelectorAll('[data-fix-start]:checked').forEach((cb) => B.fixStartingBalance(budget, cb.dataset.fixStart));
+          document.querySelectorAll('[data-fix-pair]:checked').forEach((cb) => {
+            const p = pairs[Number(cb.dataset.fixPair)];
+            B.linkTransfer(budget, p.outId, p.inId);
+          });
+          const merge = $('#fix-buckets');
+          if (merge && merge.checked) {
+            const [keep, ...rest] = toCategoriseEnvelopes();
+            for (const e of rest) B.deleteEnvelope(budget, e.id, keep.id);
+          }
+        }, 'Fixed the accounts');
+        if (ok) {
+          $('#check-dialog').close();
+          const after = B.readyToAssign(budget, month);
+          toast(`Fixed. Ready to Assign ${after === before ? 'is unchanged' : `went from ${money(before)} to ${money(after)}`}.`, { action: 'Undo', onAction: undo });
+        }
+      });
+    }
+    $('#check-dialog').showModal();
+  }
+
   function importCsvRows() {
     const acct = budget.accounts.find((a) => a.id === csv.accountId);
     if (!acct) return;
-    const rows = csv.rows.filter((t) => !t.duplicate);
+    const rows = csv.rows.filter((t) => !t.duplicate && t.envelopeId !== '__skip');
     const onBudget = !acct.offBudget;
     const newId = () => ((globalThis.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
     const ok = attempt(() => {
       let bucket = null;
       const toCategorise = () => {
         if (!bucket) {
-          bucket = budget.envelopes.find((e) => e.name === 'To categorise')
+          bucket = budget.envelopes.find((e) => /^(📥\s*)?To categorise$/.test(e.name))
             || B.addEnvelope(budget, { name: '📥 To categorise', group: 'Imported' });
         }
         return bucket.id;
       };
       for (const t of rows) {
-        let envelopeId = onBudget && t.envelopeId ? t.envelopeId : null;
-        if (onBudget && !envelopeId && t.amount < 0) envelopeId = toCategorise();
-        budget.transactions.push({
+        const other = t.envelopeId === '__transfer' && budget.transactions.find((x) => x.id === t.matchId && !x.transferId);
+        let envelopeId = onBudget && t.envelopeId && !t.envelopeId.startsWith('__') ? t.envelopeId : null;
+        if (onBudget && !envelopeId && !other && t.amount < 0) envelopeId = toCategorise();
+        const tx = {
           id: newId(), date: t.date, payee: t.payee, note: t.note, amount: t.amount,
           envelopeId, accountId: acct.id, importKey: `bank:${C.dupKey(t)}`,
-        });
+        };
+        budget.transactions.push(tx);
+        if (other) {
+          if (tx.amount < 0) B.linkTransfer(budget, tx.id, other.id);
+          else B.linkTransfer(budget, other.id, tx.id);
+        }
       }
+      if (csv.fixStart) B.fixStartingBalance(budget, acct.id);
       acct.csvLayout = C.layoutToSave(csv.layout);
     }, `Imported ${rows.length} transaction${rows.length === 1 ? '' : 's'} into ${acct.name}`);
     if (ok) {

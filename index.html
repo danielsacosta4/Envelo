@@ -130,6 +130,8 @@
         <h2>Bank file</h2>
         <p class="hint">Import a CSV export from your bank. Envelo learns each bank's layout the first time.</p>
         <button type="button" class="btn" data-action="bank-import">Import bank file</button>
+        <p class="hint">Ready to Assign looks too high after an import? Envelo can look for transfers counted as income and history counted twice.</p>
+        <button type="button" class="btn" data-action="check-accounts">Check accounts</button>
       </section>
       <section class="card">
         <h2>Coming up and repeating</h2>
@@ -675,6 +677,7 @@
     </form>
   </dialog>
 
+  <dialog id="check-dialog" class="modal wide"><div id="check-body"></div></dialog>
   <dialog id="csv-dialog" class="modal wide">
     <div class="stack" id="csv-body"></div>
   </dialog>
