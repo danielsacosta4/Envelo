@@ -802,6 +802,21 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
     throw new HttpError(404, 'Not found.');
   }
 
+  const prints = new Map(); // relative path -> { mtime, hash }
+  function fingerprint(rel) {
+    const file = path.join(publicDir, rel);
+    try {
+      const { mtimeMs } = fs.statSync(file);
+      const known = prints.get(rel);
+      if (known && known.mtime === mtimeMs) return known.hash;
+      const hash = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex').slice(0, 10);
+      prints.set(rel, { mtime: mtimeMs, hash });
+      return hash;
+    } catch {
+      return VERSION;
+    }
+  }
+
   function serveStatic(req, res, pathname) {
     // The installable-app files live in src/ but must be served from the root
     // so the service worker can look after the whole app.
@@ -818,6 +833,16 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
       return;
     }
     const type = CONTENT_TYPES[path.extname(file)] || 'application/octet-stream';
+    if (requested === '/index.html') {
+      // Every script and stylesheet link carries a fingerprint of the file, so
+      // after an update no browser or proxy can keep serving an old copy next
+      // to the new page. The page also says which version it belongs to.
+      const html = fs.readFileSync(file, 'utf8')
+        .replace(/(src|href)="(src\/[^"?]+\.(?:js|css))"/g, (m, attr, rel) => `${attr}="${rel}?v=${fingerprint(rel)}"`)
+        .replace('<head>', `<head>\n  <meta name="envelo-version" content="${VERSION}">`);
+      res.writeHead(200, { 'Content-Type': type, ...SECURITY_HEADERS, 'Cache-Control': 'no-store' });
+      return res.end(req.method === 'HEAD' ? undefined : html);
+    }
     const extra = pathname === '/sw.js' ? { 'Service-Worker-Allowed': '/' } : {};
     res.writeHead(200, { 'Content-Type': type, ...SECURITY_HEADERS, 'Cache-Control': 'no-cache', ...extra });
     if (req.method === 'HEAD') return res.end();

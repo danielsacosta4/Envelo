@@ -3651,9 +3651,31 @@
     render();
   }
 
-  fetch('/api/version').then((r) => r.json()).then((v) => {
-    $('#version').textContent = `Envelo ${v.version}`;
-  }).catch(() => {});
+  // The page knows its own version; when the server has a newer one (an
+  // update while the page was open, or a cache somewhere keeping old files),
+  // offer a reload instead of running old code.
+  const PAGE_VERSION = (document.querySelector('meta[name="envelo-version"]') || {}).content || null;
+  let updateShown = false;
+  function checkVersion() {
+    fetch('/api/version', { cache: 'no-store' }).then((r) => r.json()).then((v) => {
+      $('#version').textContent = `Envelo ${v.version}`;
+      if (!PAGE_VERSION || v.version === PAGE_VERSION || updateShown) return;
+      updateShown = true;
+      const bar = document.createElement('div');
+      bar.className = 'update-bar';
+      bar.setAttribute('role', 'status');
+      bar.innerHTML = `<span>Envelo ${esc(v.version)} is ready. This page is still running ${esc(PAGE_VERSION)}.</span>`;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn sm yellow';
+      btn.textContent = 'Reload';
+      btn.addEventListener('click', () => location.reload());
+      bar.append(btn);
+      document.body.append(bar);
+    }).catch(() => {});
+  }
+  checkVersion();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkVersion(); });
 
   // Installable app: the service worker keeps it working offline. Browsers
   // only allow it over HTTPS (or on localhost).

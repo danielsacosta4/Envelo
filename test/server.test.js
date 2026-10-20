@@ -579,3 +579,20 @@ test('the installable-app files are served from the root', async () => {
     await s.close();
   }
 });
+
+test('the page links scripts with a fingerprint so caches cannot serve old code', async () => {
+  const s = await start();
+  try {
+    const res = await fetch(`${s.base}/`);
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    const html = await res.text();
+    assert.match(html, /<script src="src\/app\.js\?v=[0-9a-f]{10}"><\/script>/);
+    assert.match(html, /href="src\/styles\.css\?v=[0-9a-f]{10}"/);
+    const { version } = await (await fetch(`${s.base}/api/version`)).json();
+    assert.ok(html.includes(`<meta name="envelo-version" content="${version}">`));
+    const js = await fetch(`${s.base}/src/app.js?v=123`);
+    assert.equal(js.status, 200);
+  } finally {
+    await s.close();
+  }
+});
