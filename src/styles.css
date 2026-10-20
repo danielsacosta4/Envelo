@@ -824,3 +824,6 @@ input.amt.pulse { animation: pulse-in .5s cubic-bezier(.3,1.5,.5,1); }
 .csv-warn { border-left: 5px solid var(--bad); background: var(--card); padding: 8px 12px; margin-top: 10px; }
 .csv-warn p { margin: 4px 0; }
 .csv-ok { color: var(--good); font-weight: 800; margin: 10px 0 0; }
+
+.btn.danger-outline { color: var(--bad); }
+.grow-row > label { flex: 1; min-width: 0; }

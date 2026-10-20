@@ -1453,6 +1453,7 @@
       case 'set-sticker': setSticker(btn.closest('form'), btn.dataset.emoji || ''); break;
       case 'reorder': reordering = !reordering; render(); break;
       case 'check-accounts': openCheckAccounts(); break;
+      case 'bulk-delete': openBulkDelete(); break;
       case 'move-group': if (attempt(() => B.moveGroup(budget, btn.dataset.group, Number(btn.dataset.dir)))) Sounds.play('tick'); break;
       case 'move-env': if (attempt(() => B.moveEnvelope(budget, btn.dataset.id, Number(btn.dataset.dir)))) Sounds.play('tick'); break;
       case 'toggle-group': toggleCollapsed(btn.dataset.group); render(); break;
@@ -2675,6 +2676,53 @@
     const cb = $('#csv-fix-start');
     if (cb) cb.addEventListener('change', () => { csv.fixStart = cb.checked; renderCsvSummary(); });
   }
+
+  // Delete many transactions of the open account at once.
+  function bulkOptions() {
+    const f = $('#bulk-form');
+    return { only: f.only.value, from: f.from.value || null, to: f.to.value || null, keepStart: f.keepStart.checked };
+  }
+  function renderBulkInfo() {
+    const acct = budget.accounts.find((a) => a.id === openAccountId);
+    if (!acct) return;
+    const picked = B.accountTransactionsToDelete(budget, acct.id, bulkOptions());
+    const transfers = picked.filter((t) => t.transferId);
+    const others = [...new Set(transfers.map((t) => t.toAccountId))].map((id) => (budget.accounts.find((a) => a.id === id) || {}).name).filter(Boolean);
+    const total = picked.reduce((sum, t) => sum + t.amount, 0);
+    $('#bulk-info').innerHTML = picked.length
+      ? `<p><b>${picked.length} transaction${picked.length === 1 ? '' : 's'}</b> will be deleted; the balance changes by ${esc(money(-total))}.</p>
+        ${transfers.length ? `<p>${transfers.length} of them ${transfers.length === 1 ? 'is a transfer' : 'are transfers'}: the other half in ${esc(others.join(', '))} goes too.</p>` : ''}
+        <p class="hint">You can undo this straight after with Undo or Ctrl+Z.</p>`
+      : '<p>Nothing matches.</p>';
+    $('#bulk-go').disabled = !picked.length;
+    $('#bulk-go').textContent = picked.length ? `Delete ${picked.length}` : 'Delete';
+  }
+  function openBulkDelete() {
+    const acct = budget.accounts.find((a) => a.id === openAccountId);
+    if (!acct) return;
+    const f = $('#bulk-form');
+    f.reset();
+    $('#bulk-title').textContent = `Delete transactions in ${acct.name}`;
+    renderBulkInfo();
+    $('#bulk-dialog').showModal();
+  }
+  $('#bulk-form').addEventListener('input', renderBulkInfo);
+  $('#bulk-form').addEventListener('change', renderBulkInfo);
+  $('#bulk-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const acct = budget.accounts.find((a) => a.id === openAccountId);
+    if (!acct) return;
+    let n = 0;
+    const ok = attempt(() => {
+      n = B.accountTransactionsToDelete(budget, acct.id, bulkOptions()).length;
+      B.deleteAccountTransactions(budget, acct.id, bulkOptions());
+    }, `Deleted transactions in ${acct.name}`);
+    if (ok) {
+      $('#bulk-dialog').close();
+      toast(`Deleted ${n} transaction${n === 1 ? '' : 's'} from ${acct.name}`, { action: 'Undo', onAction: undo });
+      Sounds.play('crumple');
+    }
+  });
 
   // Check accounts: repairs for data already imported.
   function toCategoriseEnvelopes() {

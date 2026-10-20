@@ -154,6 +154,7 @@
             <button type="button" class="btn" id="acct-reconcile" data-action="reconcile">Reconcile</button>
             <button type="button" class="btn" id="acct-import" data-action="bank-import">Import bank file</button>
             <button type="button" class="btn" id="acct-loan" data-action="edit-loan" hidden>Loan details</button>
+            <button type="button" class="btn danger-outline" data-action="bulk-delete">Delete transactions</button>
           </div>
         </div>
       </div>
@@ -678,6 +679,27 @@
   </dialog>
 
   <dialog id="check-dialog" class="modal wide"><div id="check-body"></div></dialog>
+  <dialog id="bulk-dialog" class="modal">
+    <form id="bulk-form" class="stack" autocomplete="off">
+      <h2 id="bulk-title">Delete transactions</h2>
+      <label>Which ones
+        <select name="only">
+          <option value="all">All transactions in this account</option>
+          <option value="imported">Only ones imported from a file</option>
+        </select>
+      </label>
+      <div class="row grow-row">
+        <label>From <span class="optional">(optional)</span><input type="date" name="from"></label>
+        <label>To <span class="optional">(optional)</span><input type="date" name="to"></label>
+      </div>
+      <label class="check"><input type="checkbox" name="keepStart" checked><span>Keep the starting balance</span></label>
+      <div id="bulk-info" class="csv-warn"></div>
+      <div class="row">
+        <button type="submit" class="btn danger" id="bulk-go">Delete</button>
+        <button type="button" class="btn" data-action="close-dialog">Cancel</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="csv-dialog" class="modal wide">
     <div class="stack" id="csv-body"></div>
   </dialog>

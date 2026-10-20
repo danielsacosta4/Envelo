@@ -703,3 +703,21 @@ test('history imported before a starting balance is not counted twice', () => {
   assert.equal(B.accountBalance(b, acct.id), 99000);
   assert.equal(B.startingBalanceOverlap(b, acct.id), null);
 });
+
+test('all or only imported transactions of an account can be deleted at once', () => {
+  const { b, food } = sample();
+  const main = B.addAccount(b, { name: 'Main', balance: 10000, date: '2026-09-01' });
+  const save = B.addAccount(b, { name: 'Savings', balance: 0 });
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-02', amount: 500, envelopeId: food.id, accountId: main.id });
+  b.transactions.push({ id: 'imp', date: '2026-10-05', payee: 'Shop', note: '', amount: -700, envelopeId: food.id, accountId: main.id, importKey: 'bank:x' });
+  B.addTransaction(b, { kind: 'transfer', date: '2026-10-06', amount: 1000, accountId: main.id, toAccountId: save.id });
+  B.addSplit(b, { date: '2026-10-07', payee: 'Mixed', accountId: main.id, lines: [{ envelopeId: food.id, amount: 100 }, { envelopeId: food.id, amount: 200 }] });
+  assert.equal(B.accountTransactionsToDelete(b, main.id, { only: 'imported' }).length, 1);
+  assert.equal(B.deleteAccountTransactions(b, main.id, { only: 'imported' }), 1);
+  assert.equal(B.accountTransactionsToDelete(b, main.id, { from: '2026-10-06' }).length, 3);
+  // Everything but the starting balance; the transfer's other half goes too.
+  assert.equal(B.deleteAccountTransactions(b, main.id), 5);
+  assert.deepEqual(b.transactions.map((t) => t.payee), ['Starting balance']);
+  assert.equal(B.deleteAccountTransactions(b, main.id, { keepStart: false }), 1);
+  assert.equal(b.transactions.length, 0);
+});

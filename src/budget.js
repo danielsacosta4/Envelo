@@ -566,6 +566,28 @@
       && !(t.splitId && x.splitId === t.splitId));
   }
 
+  // Delete many transactions of one account at once.
+  //   only: 'all' | 'imported' (from bank files or Actual)
+  //   from, to: optional YYYY-MM-DD limits (inclusive)
+  //   keepStart: keep the "Starting balance" transaction
+  // A transfer goes with its other half in the other account, and a split
+  // with all its lines, as when deleting one by one.
+  function accountTransactionsToDelete(b, accountId, { only = 'all', from = null, to = null, keepStart = true } = {}) {
+    return b.transactions.filter((t) => t.accountId === accountId
+      && (only !== 'imported' || !!t.importKey)
+      && (!from || t.date >= from) && (!to || t.date <= to)
+      && !(keepStart && t.payee === 'Starting balance' && !t.transferId));
+  }
+  function deleteAccountTransactions(b, accountId, opts = {}) {
+    const picked = accountTransactionsToDelete(b, accountId, opts);
+    const ids = new Set(picked.map((t) => t.id));
+    const transfers = new Set(picked.filter((t) => t.transferId).map((t) => t.transferId));
+    const splits = new Set(picked.filter((t) => t.splitId).map((t) => t.splitId));
+    const before = b.transactions.length;
+    b.transactions = b.transactions.filter((t) => !ids.has(t.id) && !(t.transferId && transfers.has(t.transferId)) && !(t.splitId && splits.has(t.splitId)));
+    return before - b.transactions.length;
+  }
+
   // Split transactions: one purchase spread over several envelopes. Each line
   // is stored as its own spending transaction sharing a splitId, so every
   // total and report works without knowing about splits.
@@ -1439,6 +1461,7 @@
     setTarget, normalizeTarget, fundAllTargets, weekdaysInMonth,
     updateEnvelope, deleteEnvelope, updateTransaction, transactionKind,
     moveGroup, moveEnvelope, childrenOf, updateRecurring, upcoming,
+    accountTransactionsToDelete, deleteAccountTransactions,
     matchTransfers, findTransferPairs, linkTransfer, startingBalanceOverlap, fixStartingBalance,
     addAccount, updateAccount, deleteAccount, accountBalance, reconcileAccount, ensureAccounts,
     isOnBudget, transferNeedsEnvelope, countsAsIncome, isHidden, setGroupHidden, accountRegister,
