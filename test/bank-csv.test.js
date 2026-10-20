@@ -100,3 +100,17 @@ test('a balance column is found and gives the bank balance after the newest row'
   assert.deepEqual(C.endBalance(transactions), { date: '2026-10-03', balance: 9000 });
   assert.equal(C.endBalance([{ date: '2026-10-01', balance: null }]), null);
 });
+
+test('Revolut exports in other languages: reverted rows skipped, fees counted', () => {
+  const text = [
+    'Tipo,Produto,Data de início,Data de Conclusão,Descrição,Montante,Comissão,Moeda,Estado,Saldo',
+    'Carregamento,Atual,2026-10-01 10:00:00,,Carregamento com cartão,50.00,0.00,EUR,REVERTIDA,',
+    'Carregamento,Atual,2026-10-01 10:05:00,2026-10-01 10:05:09,Carregamento com cartão,100.00,0.00,EUR,CONCLUÍDA,100.00',
+    'Pagamento com cartão,Atual,2026-10-02 12:00:00,2026-10-03 09:00:00,Pingo Doce,-20.00,0.04,EUR,CONCLUÍDA,79.96',
+  ].join('\n');
+  const L = C.analyze(text);
+  assert.equal(L.presetName, 'Revolut');
+  const { transactions } = C.toTransactions(L);
+  assert.deepEqual(transactions.map((t) => [t.date, t.amount]), [['2026-10-01', 10000], ['2026-10-03', -2004]]);
+  assert.deepEqual(C.endBalance(transactions), { date: '2026-10-03', balance: 7996 });
+});

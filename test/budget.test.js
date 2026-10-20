@@ -721,3 +721,23 @@ test('all or only imported transactions of an account can be deleted at once', (
   assert.equal(B.deleteAccountTransactions(b, main.id, { keepStart: false }), 1);
   assert.equal(b.transactions.length, 0);
 });
+
+test('uncategorised imported spending comes off Ready to Assign at once', () => {
+  const b = B.create();
+  const acct = B.addAccount(b, { name: 'Bank', balance: 0 });
+  const inbox = B.addEnvelope(b, { name: '📥 To categorise', group: 'Imported' });
+  const food = B.addEnvelope(b, { name: 'Food', group: 'Daily' });
+  B.addTransaction(b, { kind: 'income', date: '2026-10-01', amount: 100000, accountId: acct.id });
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-05', amount: 30000, envelopeId: inbox.id, accountId: acct.id });
+  // The money is gone: 700 left, not 1000.
+  assert.equal(B.readyToAssign(b, '2026-10'), 70000);
+  const st = B.envelopeStatus(b, inbox.id, '2026-10');
+  assert.equal(st.inbox, true);
+  assert.equal(st.available, 0);
+  assert.equal(st.activity, -30000);
+  assert.equal(B.readyToAssign(b, '2026-11'), 70000);
+  // Normal envelopes keep the usual rule: overspending comes off next month.
+  B.addTransaction(b, { kind: 'spend', date: '2026-10-06', amount: 5000, envelopeId: food.id, accountId: acct.id });
+  assert.equal(B.readyToAssign(b, '2026-10'), 70000);
+  assert.equal(B.readyToAssign(b, '2026-11'), 65000);
+});

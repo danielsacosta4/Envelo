@@ -180,6 +180,9 @@
   }
 
   // Known exports with extra rules.
+  // Revolut states that never moved money: reverted, declined, pending, failed...
+  const REVOLUT_NOT_DONE = /revert|declin|pend|fail|cancel|recus|falh|rechaz|annul|attente|abgelehnt|ausstehend|storn|rifiut|sospeso|odrzuc|oczek/i;
+
   const PRESETS = [
     {
       id: 'revolut',
@@ -188,6 +191,16 @@
       columns: (h) => ({ date: h.indexOf('completed date'), payee: h.indexOf('description'), amount: h.indexOf('amount'), debit: -1, credit: -1, note: -1, fee: h.indexOf('fee'), state: h.indexOf('state') }),
       // Pending and reverted rows are skipped; the fee is part of what left the account.
       keep: (row, cols) => cols.state < 0 || /^completed$/i.test(row[cols.state] || ''),
+    },
+    {
+      // The same export in other languages (Portuguese, Spanish, French...):
+      // the headers are translated but the ten columns keep their order.
+      id: 'revolut-any',
+      name: 'Revolut',
+      test: (h, rows = []) => h.length === 10 && rows.length > 0 && rows.slice(0, 20).every((r) => r.length >= 10
+        && /^[A-Z]{3}$/.test(r[7] || '') && /^\d{4}-\d{2}-\d{2}/.test(r[2] || '') && /^[A-ZÀ-Ý_ ]+$/.test(r[8] || '')),
+      columns: () => ({ date: 3, payee: 4, amount: 5, debit: -1, credit: -1, note: -1, fee: 6, state: 8, balance: 9 }),
+      keep: (row, cols) => !!row[cols.date] && !REVOLUT_NOT_DONE.test(row[cols.state] || ''),
     },
     {
       id: 'n26',
@@ -224,7 +237,7 @@
     const rows = all.slice(start + (hasHeader ? 1 : 0)).filter((r) => r.length > 1);
     const signature = hasHeader ? header.map(norm).join('|') : `cols:${header.length}`;
     const lower = header.map(norm);
-    const preset = hasHeader ? PRESETS.find((p) => p.test(lower)) || null : null;
+    const preset = hasHeader ? PRESETS.find((p) => p.test(lower, rows)) || null : null;
 
     let columns;
     let dateFormat;

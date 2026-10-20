@@ -873,6 +873,15 @@
   // and the overspent amount comes out of the next month's Ready to Assign
   // (counted in `absorbed`). Envelopes with carryOverspending keep the
   // negative balance instead.
+  // The "To categorise" envelope holds imported spending that has no envelope
+  // yet. No money is ever assigned to it, so what it spends comes straight off
+  // Ready to Assign in the same month instead of next month like normal
+  // overspending: spent money is never shown as money left to assign.
+  const INBOX_NAME = /^(📥\s*)?To categorise$/;
+  function isInbox(env) {
+    return !!env && (!!env.inbox || INBOX_NAME.test(env.name));
+  }
+
   function envelopeLedger(b, env, month) {
     const activity = new Map();
     for (const t of b.transactions) {
@@ -881,6 +890,7 @@
       if (m <= month) activity.set(m, (activity.get(m) || 0) + t.amount);
     }
     const first = firstMonth(b);
+    const inbox = isInbox(env);
     let end = 0;
     let absorbed = 0;
     let start = 0;
@@ -895,6 +905,10 @@
       assigned = assignedIn(b, m, env.id);
       act = activity.get(m) || 0;
       end = start + assigned + act;
+      if (inbox && end < 0) {
+        absorbed += -end;
+        end = 0;
+      }
     }
     return { carryover: start, assigned, activity: act, available: end, absorbed };
   }
@@ -919,6 +933,7 @@
       name: env.name,
       group: env.group,
       parentId: env.parentId || null,
+      inbox: isInbox(env),
       hidden: isHidden(b, env),
       target,
       carryover,
@@ -1461,7 +1476,7 @@
     setTarget, normalizeTarget, fundAllTargets, weekdaysInMonth,
     updateEnvelope, deleteEnvelope, updateTransaction, transactionKind,
     moveGroup, moveEnvelope, childrenOf, updateRecurring, upcoming,
-    accountTransactionsToDelete, deleteAccountTransactions,
+    accountTransactionsToDelete, deleteAccountTransactions, isInbox,
     matchTransfers, findTransferPairs, linkTransfer, startingBalanceOverlap, fixStartingBalance,
     addAccount, updateAccount, deleteAccount, accountBalance, reconcileAccount, ensureAccounts,
     isOnBudget, transferNeedsEnvelope, countsAsIncome, isHidden, setGroupHidden, accountRegister,

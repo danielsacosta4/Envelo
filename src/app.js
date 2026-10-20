@@ -463,10 +463,13 @@
       ? `<div class="family">${kids.length} inside · ${esc(money(kids.reduce((t, c) => t + c.available, e.available)))} available in all</div>`
       : '';
     const cell = reordering && !isHiddenRow ? moveButtons('move-env', `data-id="${e.id}"`, text) : fund;
+    const inboxNote = e.inbox && e.activity < 0
+      ? `<div class="goal short">${esc(money(-e.activity))} spent without an envelope, already taken from Ready to Assign. <button type="button" class="link" data-action="categorise" data-id="${e.id}">Give them envelopes →</button></div>`
+      : '';
     return `<div class="env${e.isSub ? ' sub' : ''}${kids.length ? ' parent' : ''}" data-env-row="${e.id}">
       <div class="env-cell">${tile(e.name)}<div class="env-text">
         <div class="env-name"><button type="button" class="env-link" data-action="edit-target" data-id="${e.id}" title="Edit envelope and target">${esc(text)}</button>${e.overspent ? '<span class="stamp over">Overspent</span>' : ''}${shared ? '<span class="stamp shared" title="Shared with someone">Shared</span>' : ''}</div>
-        ${goal}${family}</div></div>
+        ${goal}${family}${inboxNote}</div></div>
       <div class="c" data-label="Assigned"><input type="text" inputmode="decimal" class="amt ${state}" aria-label="Assigned to ${esc(e.name)}" value="${B.toInput(e.assigned)}" data-env="${e.id}"></div>
       <div class="c spent" data-label="Spent">${esc(money(e.activity))}</div>
       <div class="c" data-label="Available">${chip(e)}</div>
@@ -509,12 +512,17 @@
     ready.classList.toggle('warn', view.readyToAssign < 0);
     ready.classList.toggle('zero-done', allAssigned);
     const hasTargets = budget.envelopes.some((e) => e.target && !B.isHidden(budget, e));
+    // Overspending this month only comes off Ready to Assign next month; say so.
+    const over = view.groups.flatMap((g) => g.envelopes).filter((e) => e.available < 0 && !e.inbox).reduce((t, e) => t - e.available, 0);
+    const overLine = over > 0 && month === thisMonth()
+      ? `<div class="over-line">${esc(money(over))} overspent: it comes off next month. <button type="button" class="link" data-action="cover-all">Cover it now</button></div>`
+      : '';
     ready.innerHTML = `${allAssigned ? `<div class="zero-stamp">Every ${esc(currencyWord())} has a job</div>` : ''}
       <div class="label">${view.readyToAssign < 0 ? 'Assigned too much' : 'Ready to assign'}</div>
       <div class="amount">${esc(money(view.readyToAssign))}</div>
       ${view.underfunded > 0
         ? `<div class="under-line">Targets need ${esc(money(view.underfunded))} <button type="button" class="btn sm yellow" data-action="fund-all">Fund all</button></div>`
-        : hasTargets ? '<div class="under-line">✓ All targets funded</div>' : '<div class="under-line"></div>'}`;
+        : hasTargets ? '<div class="under-line">✓ All targets funded</div>' : '<div class="under-line"></div>'}${overLine}`;
     const key = `envelo.cheered.${account ? account.email : ''}`;
     let cheered = '';
     try { cheered = localStorage.getItem(key) || ''; } catch { /* ignore */ }
@@ -1415,6 +1423,15 @@
         break;
       }
       case 'cover': openMove({ to: btn.dataset.id, cover: true }); break;
+      case 'cover-all': {
+        const over = B.monthView(budget, month).groups.flatMap((g) => g.envelopes).filter((e) => e.available < 0 && !e.inbox);
+        const total = over.reduce((t, e) => t - e.available, 0);
+        if (over.length) {
+          attempt(() => { for (const e of over) B.setAssigned(budget, month, e.id, e.assigned - e.available); },
+            `Covered ${money(total)} of overspending from Ready to Assign`);
+        }
+        break;
+      }
       case 'move-money': openMove({}); break;
       case 'edit-target': openTarget(btn.dataset.id); break;
       case 'edit-tx': editTransaction(btn.dataset.id); break;
@@ -1453,6 +1470,14 @@
       case 'set-sticker': setSticker(btn.closest('form'), btn.dataset.emoji || ''); break;
       case 'reorder': reordering = !reordering; render(); break;
       case 'check-accounts': openCheckAccounts(); break;
+      case 'categorise': {
+        const sel = $('#search-envelope');
+        sel.innerHTML = `<option value="${esc(btn.dataset.id)}"></option>`;
+        sel.value = btn.dataset.id;
+        $('#search-q').value = '';
+        goTo('search');
+        break;
+      }
       case 'bulk-delete': openBulkDelete(); break;
       case 'move-group': if (attempt(() => B.moveGroup(budget, btn.dataset.group, Number(btn.dataset.dir)))) Sounds.play('tick'); break;
       case 'move-env': if (attempt(() => B.moveEnvelope(budget, btn.dataset.id, Number(btn.dataset.dir)))) Sounds.play('tick'); break;
@@ -2648,7 +2673,7 @@
       items.push(`<li><b>${income.length ? `+${esc(money(sum(income)))}` : 'Nothing'}</b> to Ready to Assign${income.length ? ` from ${income.length} incoming payment${income.length === 1 ? '' : 's'}` : ''}.
         ${income.length ? '<span class="hint">Refunds or money from your own accounts are not income: pick an envelope, a transfer or "Don\'t import" for those rows.</span>' : ''}</li>`);
       if (uncat.length) items.push(`<li><b>${esc(money(sum(uncat)))}</b> to "To categorise" (${uncat.length} row${uncat.length === 1 ? '' : 's'}).
-        <span class="hint">No money is assigned there, so it shows as overspent and comes off Ready to Assign next month. Give these rows envelopes, or cover it from Ready to Assign.</span></li>`);
+        <span class="hint">Spent money is taken from Ready to Assign straight away. Give these rows envelopes now or later.</span></li>`);
     }
     if (transfers.length) items.push(`<li><b>${transfers.length}</b> transfer${transfers.length === 1 ? '' : 's'} between your accounts recognised: not counted as income or spending.</li>`);
     let warn = '';
@@ -2726,7 +2751,7 @@
 
   // Check accounts: repairs for data already imported.
   function toCategoriseEnvelopes() {
-    return budget.envelopes.filter((e) => /^(📥\s*)?To categorise$/.test(e.name));
+    return budget.envelopes.filter((e) => B.isInbox(e));
   }
   function openCheckAccounts() {
     const pairs = B.findTransferPairs(budget);
@@ -2790,8 +2815,11 @@
       let bucket = null;
       const toCategorise = () => {
         if (!bucket) {
-          bucket = budget.envelopes.find((e) => /^(📥\s*)?To categorise$/.test(e.name))
-            || B.addEnvelope(budget, { name: '📥 To categorise', group: 'Imported' });
+          bucket = budget.envelopes.find((e) => B.isInbox(e));
+          if (!bucket) {
+            bucket = B.addEnvelope(budget, { name: '📥 To categorise', group: 'Imported' });
+            bucket.inbox = true;
+          }
         }
         return bucket.id;
       };
