@@ -596,3 +596,43 @@ test('the page links scripts with a fingerprint so caches cannot serve old code'
     await s.close();
   }
 });
+
+test('a budget with "__proto__" cannot pollute the server or forge a session', async () => {
+  const s = await start();
+  try {
+    const a = client(s.base);
+    const b = client(s.base);
+    await a('POST', '/api/register', { email: 'a@example.com', password: 'longenough1' });
+    await b('POST', '/api/register', { email: 'b@example.com', password: 'longenough1' });
+    await a('POST', '/api/register', { email: 'victim@example.com', password: 'longenough1' });
+    const token = 'forged-token';
+    const H = require('node:crypto').createHash('sha256').update(token).digest('hex');
+    // The exploit from the audit: sent as raw JSON so "__proto__" stays a key.
+    const raw = `{"envelopes":[{"id":"${H}","name":"x"}],"transactions":[],"accounts":[],"assignments":{"__proto__":{"${H}":{"email":"victim@example.com","expires":9e15}}}}`;
+    const put = await fetch(`${s.base}/api/budget`, { method: 'PUT', headers: { Cookie: a.cookie(), 'Content-Type': 'application/json' }, body: raw });
+    assert.equal(put.status, 400);
+    assert.match((await put.json()).error, /__proto__/);
+    // Even an innocent-looking budget cannot make an unknown token work.
+    assert.equal(Object.prototype[H], undefined);
+    const me = await fetch(`${s.base}/api/me`, { headers: { Cookie: `envelo_session=${token}` } });
+    assert.equal(me.status, 401);
+    for (const k of ['__proto__', 'constructor', 'toString']) {
+      const r = await fetch(`${s.base}/api/me`, { headers: { Cookie: `envelo_session=${k}` } });
+      assert.equal(r.status, 401);
+    }
+    // Emails that are property names are just unknown accounts.
+    const login = await client(s.base)('POST', '/api/login', { email: 'constructor', password: 'longenough1' });
+    assert.notEqual(login.status, 200);
+    // IDs that could break out of HTML attributes are refused too.
+    const xss = await a('PUT', '/api/budget', { envelopes: [{ id: 'x"><meta http-equiv=refresh>', name: 'n' }], transactions: [], assignments: {} });
+    assert.equal(xss.status, 400);
+    // Sharing still works with normal data.
+    assert.equal((await a('PUT', '/api/budget', sampleBudget())).status, 200);
+    const sh = await a('POST', '/api/shares', { member: 'b@example.com', envelopeIds: ['e1'] });
+    const view = await b('GET', `/api/shared/${sh.body.share.id}`);
+    assert.equal(view.status, 200);
+    assert.deepEqual(view.body.budget.assignments, { '2026-10': { e1: 30000 } });
+  } finally {
+    await s.close();
+  }
+});

@@ -1136,11 +1136,90 @@
     return (cents / 100).toFixed(2);
   }
 
-  function fromJSON(obj) {
+  // Safety check for a whole budget that came from outside this app: a backup
+  // file, another device, or (on the server) any client. Not a full schema:
+  // it stops what could hurt, which is property names that reach object
+  // prototypes, IDs that are not plain tokens (they end up in HTML attributes
+  // and lookups), and values of the wrong type or absurd size.
+  // Returns a list of problems; empty means fine.
+  const ID_RE = /^[A-Za-z0-9_.:-]{1,80}$/;
+  const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+  const ID_FIELDS = ['id', 'envelopeId', 'accountId', 'toAccountId', 'transferId', 'splitId', 'recurringId', 'receiptId', 'parentId'];
+  const MAX_CENTS = 1e13;
+  function validateBudget(b) {
+    const problems = [];
+    const bad = (msg) => { if (problems.length < 20) problems.push(msg); };
+    if (!b || typeof b !== 'object' || Array.isArray(b)) return ['not a budget'];
+    // Every key at every level, without recursing forever.
+    let nodes = 0;
+    const scan = (v, depth, where) => {
+      if (++nodes > 2e6 || depth > 12) { bad('too deeply nested'); return; }
+      if (!v || typeof v !== 'object') return;
+      for (const k of Object.keys(v)) {
+        if (FORBIDDEN_KEYS.has(k)) bad(`forbidden name "${k}" in ${where}`);
+        scan(v[k], depth + 1, where);
+      }
+    };
+    scan(b, 0, 'the budget');
+    const isId = (v) => typeof v === 'string' && ID_RE.test(v);
+    const checkIds = (rec, where) => {
+      for (const f of ID_FIELDS) {
+        if (rec[f] === undefined || rec[f] === null || (f !== 'id' && rec[f] === '')) continue;
+        if (!isId(rec[f])) bad(`bad ${f} in ${where}`);
+      }
+    };
+    const list = (name) => (b[name] === undefined ? [] : Array.isArray(b[name]) ? b[name] : (bad(`${name} is not a list`), []));
+    const records = (name, check) => list(name).forEach((r, i) => {
+      if (!r || typeof r !== 'object' || Array.isArray(r)) { bad(`${name} ${i + 1} is not a record`); return; }
+      checkIds(r, `${name} ${i + 1}`);
+      if (r.id === undefined && name !== 'hiddenGroups') bad(`${name} ${i + 1} has no id`);
+      check(r, `${name} ${i + 1}`);
+    });
+    const text = (v, max) => v === undefined || v === null || (typeof v === 'string' && v.length <= max);
+    const cents = (v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= MAX_CENTS;
+    records('envelopes', (e, w) => {
+      if (!text(e.name, 200) || !e.name) bad(`bad name in ${w}`);
+      if (!text(e.group, 200)) bad(`bad group in ${w}`);
+    });
+    records('accounts', (a, w) => { if (!text(a.name, 200) || !a.name) bad(`bad name in ${w}`); });
+    records('transactions', (t, w) => {
+      if (typeof t.date !== 'string' || !DATE_RE.test(t.date)) bad(`bad date in ${w}`);
+      if (!cents(t.amount)) bad(`bad amount in ${w}`);
+      if (!text(t.payee, 500) || !text(t.note, 2000)) bad(`text too long in ${w}`);
+    });
+    records('recurring', (r, w) => { if (!cents(r.amount)) bad(`bad amount in ${w}`); });
+    records('goals', (g, w) => {
+      if (!cents(g.amount)) bad(`bad amount in ${w}`);
+      if (g.ids !== undefined && (!Array.isArray(g.ids) || !g.ids.every(isId))) bad(`bad ids in ${w}`);
+    });
+    records('payeeRules', () => {});
+    list('hiddenGroups').forEach((g) => { if (typeof g !== 'string') bad('bad hidden group'); });
+    const a = b.assignments;
+    if (!a || typeof a !== 'object' || Array.isArray(a)) bad('assignments missing');
+    else {
+      for (const [m, byEnv] of Object.entries(a)) {
+        if (!/^\d{4}-\d{2}$/.test(m)) { bad(`bad month "${String(m).slice(0, 20)}"`); continue; }
+        if (!byEnv || typeof byEnv !== 'object' || Array.isArray(byEnv)) { bad(`bad month ${m}`); continue; }
+        for (const [id, v] of Object.entries(byEnv)) {
+          if (!ID_RE.test(id) || !cents(v)) bad(`bad amount assigned in ${m}`);
+        }
+      }
+    }
+    if (b.groupColors !== undefined && (typeof b.groupColors !== 'object' || Array.isArray(b.groupColors)
+        || !Object.values(b.groupColors).every((c) => Number.isInteger(c)))) bad('bad group colours');
+    if (b.currency !== undefined && !(typeof b.currency === 'string' && /^[A-Z]{3}$/.test(b.currency))) bad('bad currency');
+    return problems;
+  }
+
+  //   trusted: the user's own budget as stored by the server (checked when it
+  //   was saved). Everything else (files, shared budgets) is checked here.
+  function fromJSON(obj, { trusted = false } = {}) {
     if (!obj || !Array.isArray(obj.envelopes) || !Array.isArray(obj.transactions)
         || !obj.assignments || typeof obj.assignments !== 'object') {
       throw new Error('This file is not an Envelo backup.');
     }
+    const problems = trusted ? [] : validateBudget(obj);
+    if (problems.length) throw new Error(`This budget has data Envelo cannot accept: ${problems.slice(0, 3).join('; ')}.`);
     return ensureAccounts({
       version: 1,
       currency: obj.currency || 'EUR',
@@ -1605,7 +1684,7 @@
     updateEnvelope, deleteEnvelope, updateTransaction, transactionKind,
     moveGroup, moveEnvelope, childrenOf, updateRecurring, upcoming,
     accountTransactionsToDelete, deleteAccountTransactions, isInbox,
-    envelopeGoals,
+    envelopeGoals, validateBudget,
     payeeList, renamePayees, savePayeeRule, removePayeeRule, matchPayeeRule, applyPayeeRule, applyPayeeRules,
     matchTransfers, findTransferPairs, linkTransfer, startingBalanceOverlap, fixStartingBalance,
     addAccount, updateAccount, deleteAccount, accountBalance, reconcileAccount, ensureAccounts,

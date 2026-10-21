@@ -74,11 +74,24 @@ function checkPassword(password, user) {
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
 
-// Shape check only. The app validates individual records.
+// Shape check plus the shared safety check (forbidden property names, plain
+// IDs, sane values). Clients are never trusted with what reaches other users.
 function isBudget(b) {
   return !!b && typeof b === 'object'
     && Array.isArray(b.envelopes) && Array.isArray(b.transactions)
     && !!b.assignments && typeof b.assignments === 'object' && !Array.isArray(b.assignments);
+}
+function budgetProblems(b) {
+  if (!isBudget(b)) return ['not a budget'];
+  return Budget.validateBudget(b);
+}
+
+// Lookup tables keyed by email or token hash never inherit anything, so a key
+// like "__proto__" or "constructor" can only ever be missing.
+function table(obj) {
+  const t = Object.create(null);
+  if (obj && typeof obj === 'object') for (const k of Object.keys(obj)) t[k] = obj[k];
+  return t;
 }
 
 function parseCookies(header) {
@@ -97,7 +110,7 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
   // one up; otherwise it is created next to the data.
   const localKey = path.join(dataDir, 'secret.key');
   const key = store.loadKey(keyFile || localKey, keyFile ? localKey : null);
-  let db = { users: {}, budgets: {}, sessions: {} };
+  let db = { users: table(), budgets: table(), sessions: table() };
   if (fs.existsSync(dbFile)) {
     let text;
     try {
@@ -106,6 +119,9 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
       throw new Error(`Cannot decrypt ${dbFile}: the encryption key does not match. Check KEY_FILE (${keyFile || localKey}).`);
     }
     db = JSON.parse(text);
+    db.users = table(db.users);
+    db.budgets = table(db.budgets);
+    db.sessions = table(db.sessions);
   }
   const receiptsDir = path.join(dataDir, 'receipts');
   // Local admin commands (`envelo reset-password ...`) prove themselves with
@@ -144,17 +160,20 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
   function ownerBudget(owner) {
     const record = db.budgets[owner];
     if (!record || !record.budget) throw new HttpError(404, 'The shared budget no longer exists.');
-    return { record, budget: Budget.fromJSON(record.budget) };
+    return { record, budget: Budget.fromJSON(record.budget, { trusted: true }) };
   }
   // What a member may see: the shared envelopes, their assignments and their
   // transactions, plus the owner's on-budget accounts to pay from.
   function sharedView(sh) {
     const { record, budget } = ownerBudget(sh.owner);
     const ids = new Set(sh.envelopeIds.filter((id) => budget.envelopes.some((e) => e.id === id)));
-    const assignments = {};
+    const assignments = Object.create(null);
     for (const [month, byEnv] of Object.entries(budget.assignments)) {
+      if (!/^\d{4}-\d{2}$/.test(month) || !byEnv || typeof byEnv !== 'object') continue;
       for (const [envId, cents] of Object.entries(byEnv)) {
-        if (ids.has(envId)) (assignments[month] = assignments[month] || {})[envId] = cents;
+        if (!ids.has(envId)) continue;
+        if (!assignments[month]) assignments[month] = Object.create(null);
+        assignments[month][envId] = cents;
       }
     }
     return {
@@ -471,7 +490,8 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
     if (req.method === 'PUT' && pathname === '/api/budget') {
       const user = requireUser(req);
       const budget = await readJson(req);
-      if (!isBudget(budget)) throw new HttpError(400, 'This is not a valid budget.');
+      const problems = budgetProblems(budget);
+      if (problems.length) throw new HttpError(400, `This budget has data Envelo cannot accept: ${problems.slice(0, 3).join('; ')}.`);
       // Optimistic locking: a save based on an older revision is refused, so
       // two devices cannot silently overwrite each other.
       const current = db.budgets[user.email];

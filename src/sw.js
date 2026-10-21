@@ -3,7 +3,7 @@
 // updates show up straight away; the copy is only used when offline.
 // (Browsers only run service workers over HTTPS or on localhost.)
 
-const CACHE = 'envelo-0.3.0-beta.11';
+const CACHE = 'envelo-0.3.0-beta.12';
 const SHELL = [
   '/', '/manifest.webmanifest',
   '/src/styles.css', '/src/app.js', '/src/budget.js', '/src/loans.js', '/src/bank-csv.js', '/src/charts.js',

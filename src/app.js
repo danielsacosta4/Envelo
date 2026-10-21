@@ -164,7 +164,7 @@
         // Another device saved first. Show its version rather than overwrite it.
         inFlight = false;
         dropPending();
-        budget = err.data.budget ? B.fromJSON(err.data.budget) : B.create();
+        budget = err.data.budget ? B.fromJSON(err.data.budget, { trusted: true }) : B.create();
         revision = err.data.revision;
         showError('Your budget was changed on another device, so this screen now shows the latest version. Your last change here was not saved; please make it again.');
         setSync('Reloaded the latest version');
@@ -217,7 +217,7 @@
       toast('Nothing to undo');
       return;
     }
-    budget = B.fromJSON(JSON.parse(last.snapshot));
+    budget = B.fromJSON(JSON.parse(last.snapshot), { trusted: true });
     showError('');
     scheduleSave();
     render();
@@ -1385,14 +1385,14 @@
 
   async function loadBudget() {
     const res = await api('GET', '/api/budget');
-    budget = res.budget ? B.fromJSON(res.budget) : B.create();
+    budget = res.budget ? B.fromJSON(res.budget, { trusted: true }) : B.create();
     revision = res.revision || 0;
     setSync('');
     undoStack.length = 0;
     try {
       const pending = JSON.parse(localStorage.getItem(pendingKey()) || 'null');
       if (pending && pending.revision === revision && pending.budget) {
-        budget = B.fromJSON(pending.budget);
+        budget = B.fromJSON(pending.budget, { trusted: true });
         scheduleSave();
         setSync('Sending changes made offline…');
       } else if (pending) dropPending();
@@ -2343,7 +2343,7 @@
     const prev = B.monthView(budget, month);
     try {
       if (Number.isNaN(cents)) throw new Error('Enter an amount like 25.00.');
-      const test = B.fromJSON(JSON.parse(JSON.stringify(budget)));
+      const test = B.fromJSON(JSON.parse(JSON.stringify(budget)), { trusted: true });
       B.moveMoney(test, month, from, to, cents);
     } catch (err) {
       $('#move-error').textContent = err.message;
@@ -2387,7 +2387,7 @@
     try {
       const res = await api('GET', '/api/budget');
       if ((res.revision || 0) !== revision && !dirty && !inFlight) {
-        budget = res.budget ? B.fromJSON(res.budget) : B.create();
+        budget = res.budget ? B.fromJSON(res.budget, { trusted: true }) : B.create();
         revision = res.revision || 0;
         render();
         setSync(`Updated from another device at ${new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`);
@@ -3902,7 +3902,7 @@
     if (s.negativeBudgetsSkipped) lines.push(`${s.negativeBudgetsSkipped} negative budgeted amounts are left out.`);
     lines.push('', 'This REPLACES everything currently in Envelo. Export a backup first if unsure.');
     if (!confirm(lines.join('\n'))) return;
-    budget = B.fromJSON(res.budget);
+    budget = B.fromJSON(res.budget, { trusted: true });
     showError('');
     scheduleSave();
     render();
