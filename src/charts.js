@@ -70,7 +70,8 @@
     for (let i = 0; i < count; i += step) out.push(i);
     const last = count - 1;
     if (out[out.length - 1] !== last) {
-      if (out.length > 1 && last - out[out.length - 1] < step * 0.6) out.pop();
+      // The last label is always shown, so drop the one before it if they would touch.
+      if (out.length > 1 && last - out[out.length - 1] < step) out.pop();
       out.push(last);
     }
     return new Set(out);
@@ -124,7 +125,9 @@
     yAxis(g, sc, f.plotW, f.plotH, fmtAxis);
     const yOf = (v) => M.top + f.plotH - ((v - sc.lo) / (sc.hi - sc.lo)) * f.plotH;
     const band = f.plotW / labels.length;
-    const shownLabels = labelIndices(labels.length, f.plotW);
+    // Room for the longest label (about 7px a character at axis size).
+    const longest = labels.reduce((n, l) => Math.max(n, String(l).length), 0);
+    const shownLabels = labelIndices(labels.length, f.plotW, Math.max(52, longest * 7 + 16));
     labels.forEach((lab, i) => {
       const cx = M.left + band * i + band / 2;
       if (shownLabels.has(i)) {
@@ -174,7 +177,9 @@
     const yOf = (v) => M.top + f.plotH - ((v - sc.lo) / (sc.hi - sc.lo)) * f.plotH;
     const step = labels.length > 1 ? f.plotW / (labels.length - 1) : 0;
     const xOf = (i) => M.left + (labels.length > 1 ? step * i : f.plotW / 2);
-    const shownLabels = labelIndices(labels.length, f.plotW);
+    // Room for the longest label (about 7px a character at axis size).
+    const longest = labels.reduce((n, l) => Math.max(n, String(l).length), 0);
+    const shownLabels = labelIndices(labels.length, f.plotW, Math.max(52, longest * 7 + 16));
     labels.forEach((lab, i) => {
       if (!shownLabels.has(i)) return;
       const t = el('text', { x: xOf(i), y: f.height - 10, class: 'chart-axis', 'text-anchor': i === 0 ? 'start' : i === labels.length - 1 ? 'end' : 'middle' }, g);

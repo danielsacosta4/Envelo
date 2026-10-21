@@ -1442,9 +1442,14 @@
     const value = history[history.length - 1].value;
     const progress = Math.max(0, Math.min(1, value / goal.amount));
     const remaining = Math.max(0, goal.amount - value);
-    // Average change over the last three months.
-    const back = history[Math.max(0, history.length - 4)].value;
-    const rate = Math.round((value - back) / Math.min(3, history.length - 1 || 1));
+    // Average change over the last three months, counted only from when
+    // saving started: money put aside this month for a new goal is a pace
+    // of that much a month, not a third of it.
+    const last = history.length - 1;
+    let from = Math.max(0, last - 3);
+    while (from < last - 1 && history[from].value <= 0 && history[from + 1].value <= 0) from++;
+    const span = last - from || 1;
+    const rate = Math.round((value - history[from].value) / span);
     let eta = null;
     if (remaining === 0) eta = month;
     else if (rate > 0) eta = shiftMonth(month, Math.ceil(remaining / rate));

@@ -796,3 +796,22 @@ test('savings targets on envelopes show up as goals', () => {
   B.addGoal(b, { name: 'Fund', amount: 100000, source: 'envelopes', ids: [fund.id] });
   assert.deepEqual(B.envelopeGoals(b).map((x) => x.envelopeId), [trip.id]);
 });
+
+test('a goal started this month is on track when this month put aside its share', () => {
+  const b = B.create();
+  B.addAccount(b, { name: 'Bank', balance: 0 });
+  B.addTransaction(b, { kind: 'income', date: '2026-01-01', amount: 100000 });
+  const trip = B.addEnvelope(b, { name: 'Toulouse', group: 'Trips', target: { type: 'byDate', amount: 15000, date: '2027-01' } });
+  // October, November, December, January: 37.50 a month.
+  B.setAssigned(b, '2026-10', trip.id, 3750);
+  const st = B.goalStatus(b, B.envelopeGoals(b)[0], '2026-10');
+  assert.equal(st.value, 3750);
+  assert.equal(st.rate, 3750);
+  assert.equal(st.neededPerMonth, 3750);
+  assert.equal(st.eta, '2027-01');
+  assert.equal(st.onTrack, true);
+  // Saving for three months already: the pace is the three-month average.
+  B.setAssigned(b, '2026-08', trip.id, 1000);
+  B.setAssigned(b, '2026-09', trip.id, 1000);
+  assert.equal(B.goalStatus(b, B.envelopeGoals(b)[0], '2026-10').rate, Math.round(5750 / 3));
+});
