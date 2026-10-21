@@ -773,3 +773,26 @@ test('payees can be listed, renamed, merged and given rules', () => {
   assert.equal(B.matchPayeeRule(b, 'Pingo Doce'), null);
   assert.deepEqual(B.fromJSON(JSON.parse(JSON.stringify(b))).payeeRules, []);
 });
+
+test('savings targets on envelopes show up as goals', () => {
+  const { b, rent, food, fund } = sample();
+  const trip = B.addEnvelope(b, { name: '🇩🇪 Viagem Alemanha 2026', group: 'Desejos', target: { type: 'byDate', amount: 30000, date: '2026-12' } });
+  const hidden = B.addEnvelope(b, { name: 'Old', group: 'Desejos', target: { type: 'balance', amount: 1000 } });
+  B.updateEnvelope(b, hidden.id, { name: 'Old', group: 'Desejos', hidden: true });
+  B.setTarget(b, rent.id, { type: 'monthly', amount: 50000 });
+  B.setTarget(b, food.id, { type: 'refill', amount: 20000 });
+  B.addAccount(b, { name: 'Bank', balance: 0 });
+  B.addTransaction(b, { kind: 'income', date: '2026-10-01', amount: 100000 });
+  B.setAssigned(b, '2026-10', trip.id, 10000);
+  const goals = B.envelopeGoals(b);
+  assert.deepEqual(goals.map((g) => g.name), ['Emergency', '🇩🇪 Viagem Alemanha 2026']);
+  const g = goals[1];
+  assert.equal(g.by, '2026-12');
+  const st = B.goalStatus(b, g, '2026-10');
+  assert.equal(st.value, 10000);
+  assert.equal(st.remaining, 20000);
+  assert.equal(st.neededPerMonth, 10000);
+  // Already tracked by its own goal: not shown twice.
+  B.addGoal(b, { name: 'Fund', amount: 100000, source: 'envelopes', ids: [fund.id] });
+  assert.deepEqual(B.envelopeGoals(b).map((x) => x.envelopeId), [trip.id]);
+});

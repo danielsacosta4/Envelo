@@ -858,3 +858,7 @@ input.amt.pulse { animation: pulse-in .5s cubic-bezier(.3,1.5,.5,1); }
 
 /* Month fields: a month list and a year list side by side */
 .month-pick { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 8px; }
+
+.goal-section { grid-column: 1 / -1; margin: 6px 0 -4px; }
+.goal-section .hint { margin: 2px 0 0; }
+.goal-sticker { margin-right: 8px; font-style: normal; }

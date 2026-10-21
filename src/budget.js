@@ -1407,6 +1407,21 @@
     b.goals = (b.goals || []).filter((g) => g.id !== id);
   }
 
+  // Savings targets set on envelopes ("Have a balance", "Have a balance by a
+  // date") as goals, so the Goals page shows them too. Built fresh each time;
+  // the celebrated milestone lives on the envelope.
+  function envelopeGoals(b) {
+    const tracked = new Set((b.goals || []).filter((g) => g.source === 'envelopes' && g.ids.length === 1).map((g) => g.ids[0]));
+    return b.envelopes
+      .filter((env) => env.target && ['balance', 'byDate'].includes(env.target.type) && env.target.amount > 0
+        && !isHidden(b, env) && !tracked.has(env.id))
+      .map((env) => ({
+        id: `env:${env.id}`, envelopeId: env.id, name: env.name, amount: env.target.amount,
+        by: env.target.type === 'byDate' ? env.target.date || null : null,
+        source: 'envelopes', ids: [env.id], fromEnvelope: true, celebrated: env.goalCelebrated || 0,
+      }));
+  }
+
   // What the goal's money adds up to at the end of `month`.
   function goalValue(b, goal, month) {
     const end = monthEnd(month);
@@ -1528,7 +1543,7 @@
       .filter((x) => x.amount > 0).sort((x, y) => y.amount - x.amount).slice(0, 5);
     const txs = b.transactions.filter((t) => monthOf(t.date) === month && t.envelopeId && t.amount < 0);
     const biggest = txs.sort((x, y) => x.amount - y.amount)[0] || null;
-    const goals = (b.goals || []).map((g) => {
+    const goals = [...(b.goals || []), ...envelopeGoals(b)].map((g) => {
       const now = goalValue(b, g, month);
       const before = goalValue(b, g, prev);
       return { id: g.id, name: g.name, now, change: now - before, amount: g.amount, progress: Math.max(0, Math.min(1, now / g.amount)) };
@@ -1585,6 +1600,7 @@
     updateEnvelope, deleteEnvelope, updateTransaction, transactionKind,
     moveGroup, moveEnvelope, childrenOf, updateRecurring, upcoming,
     accountTransactionsToDelete, deleteAccountTransactions, isInbox,
+    envelopeGoals,
     payeeList, renamePayees, savePayeeRule, removePayeeRule, matchPayeeRule, applyPayeeRule, applyPayeeRules,
     matchTransfers, findTransferPairs, linkTransfer, startingBalanceOverlap, fixStartingBalance,
     addAccount, updateAccount, deleteAccount, accountBalance, reconcileAccount, ensureAccounts,

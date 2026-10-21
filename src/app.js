@@ -656,7 +656,7 @@
   function renderSideCards() {
     renderTransactions();
     renderUpcomingCard();
-    const goals = (budget.goals || []).map((g) => [g, B.goalStatus(budget, g, month, 2)]).filter(([, st]) => st.remaining > 0)
+    const goals = [...(budget.goals || []), ...B.envelopeGoals(budget)].map((g) => [g, B.goalStatus(budget, g, month, 2)]).filter(([, st]) => st.remaining > 0)
       .sort((x, y) => y[1].progress - x[1].progress);
     $('#side-goal').innerHTML = goals.length ? (() => {
       const [g, st] = goals[0];
@@ -3218,43 +3218,62 @@
     return names.length > 3 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', ');
   }
 
+  function goalCard(g, st) {
+    const pct = Math.round(st.progress * 100);
+    const done = st.remaining === 0;
+    const forecast = done ? '<p class="status good">🎉 Reached!</p>'
+      : g.by ? `<p>${st.onTrack ? '<span class="status good">✓ On track</span>' : '<span class="status bad">⚠ Behind</span>'}
+          Put aside <b>${esc(money(st.neededPerMonth))}</b> a month to reach it by ${esc(fmtMonth(g.by))}.
+          ${st.eta ? `At your recent pace (${esc(money(st.rate))}/month) you get there around <b>${esc(fmtMonth(st.eta))}</b>.` : 'It has not grown in the last 3 months.'}</p>`
+      : st.eta ? `<p>Growing ${esc(money(st.rate))} a month: you get there around <b>${esc(fmtMonth(st.eta))}</b>.</p>`
+      : '<p>It has not grown in the last 3 months. Add money to reach it.</p>';
+    const ticks = [25, 50, 75].map((m) => `<span class="tick ${pct >= m ? 'hit' : ''}" style="left:${m}%"></span>`).join('');
+    const stones = st.milestones.map((m) => `<li class="${m.month ? 'hit' : ''}"><b>${m.percent}%</b>
+      <span>${m.month ? esc(fmtMonth(m.month)) : esc(money(Math.round((g.amount * m.percent) / 100)))}</span></li>`).join('');
+    const edit = g.fromEnvelope
+      ? `<button type="button" class="icon-text" data-action="edit-target" data-id="${g.envelopeId}">Edit</button>`
+      : `<button type="button" class="icon-text" data-action="edit-goal" data-id="${g.id}">Edit</button>`;
+    const { icon, text } = splitEmoji(g.name);
+    const title = g.fromEnvelope && icon ? `<span class="goal-sticker" aria-hidden="true">${esc(icon)}</span>${esc(text)}` : esc(g.name);
+    const source = g.fromEnvelope ? 'Envelope target' : goalSourceText(g);
+    return `<article class="card goal-card ${done ? 'done' : ''}">
+      <header class="loan-head">
+        <h3>${title}</h3>
+        ${edit}
+      </header>
+      <div class="hint">${esc(source)}${g.by ? ` · by ${esc(fmtMonth(g.by))}` : ''}</div>
+      <div class="goal-top">
+        <div class="goal-pct">${pct}<small>%</small></div>
+        <div class="goal-amounts"><b>${esc(money(st.value))}</b> of ${esc(money(g.amount))}
+          ${done ? '' : `<div class="hint">${esc(money(st.remaining))} to go</div>`}</div>
+      </div>
+      <div class="goal-bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(g.name)} progress">
+        <i style="width:${pct}%"></i>${ticks}</div>
+      <ol class="milestones">${stones}</ol>
+      <div class="goal-forecast">${forecast}</div>
+      <div class="chart goal-chart" id="goal-chart-${esc(g.id.replace(':', '-'))}"></div>
+    </article>`;
+  }
+
   function renderGoals() {
-    const goals = budget.goals || [];
-    const statuses = goals.map((g) => [g, B.goalStatus(budget, g, month)]);
-    $('#goal-list').innerHTML = goals.length ? statuses.map(([g, st]) => {
-      const pct = Math.round(st.progress * 100);
-      const done = st.remaining === 0;
-      const forecast = done ? '<p class="status good">🎉 Reached!</p>'
-        : g.by ? `<p>${st.onTrack ? '<span class="status good">✓ On track</span>' : '<span class="status bad">⚠ Behind</span>'}
-            Put aside <b>${esc(money(st.neededPerMonth))}</b> a month to reach it by ${esc(fmtMonth(g.by))}.
-            ${st.eta ? `At your recent pace (${esc(money(st.rate))}/month) you get there around <b>${esc(fmtMonth(st.eta))}</b>.` : 'It has not grown in the last 3 months.'}</p>`
-        : st.eta ? `<p>Growing ${esc(money(st.rate))} a month: you get there around <b>${esc(fmtMonth(st.eta))}</b>.</p>`
-        : '<p>It has not grown in the last 3 months. Add money to reach it.</p>';
-      const ticks = [25, 50, 75].map((m) => `<span class="tick ${pct >= m ? 'hit' : ''}" style="left:${m}%"></span>`).join('');
-      const stones = st.milestones.map((m) => `<li class="${m.month ? 'hit' : ''}"><b>${m.percent}%</b>
-        <span>${m.month ? esc(fmtMonth(m.month)) : esc(money(Math.round((g.amount * m.percent) / 100)))}</span></li>`).join('');
-      return `<article class="card goal-card ${done ? 'done' : ''}">
-        <header class="loan-head">
-          <h3>${esc(g.name)}</h3>
-          <button type="button" class="icon-text" data-action="edit-goal" data-id="${g.id}">Edit</button>
-        </header>
-        <div class="hint">${esc(goalSourceText(g))}${g.by ? ` · by ${esc(fmtMonth(g.by))}` : ''}</div>
-        <div class="goal-top">
-          <div class="goal-pct">${pct}<small>%</small></div>
-          <div class="goal-amounts"><b>${esc(money(st.value))}</b> of ${esc(money(g.amount))}
-            ${done ? '' : `<div class="hint">${esc(money(st.remaining))} to go</div>`}</div>
-        </div>
-        <div class="goal-bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(g.name)} progress">
-          <i style="width:${pct}%"></i>${ticks}</div>
-        <ol class="milestones">${stones}</ol>
-        <div class="goal-forecast">${forecast}</div>
-        <div class="chart goal-chart" id="goal-chart-${g.id}"></div>
-      </article>`;
-    }).join('') : `<section class="card"><p class="empty">No goals yet. Use "New goal" to set one, such as an emergency fund
-      across your savings accounts or a net worth you want to reach.</p></section>`;
+    const own = (budget.goals || []).map((g) => [g, B.goalStatus(budget, g, month)]);
+    const fromEnv = B.envelopeGoals(budget).map((g) => [g, B.goalStatus(budget, g, month)]);
+    const statuses = [...own, ...fromEnv];
+    const parts = [];
+    if (own.length) {
+      if (fromEnv.length) parts.push('<h3 class="sub-h goal-section">Your goals</h3>');
+      parts.push(...own.map(([g, st]) => goalCard(g, st)));
+    }
+    if (fromEnv.length) {
+      parts.push(`<div class="goal-section"><h3 class="sub-h">From envelope targets</h3>
+        <p class="hint">Envelopes with a "Have a balance" target. Edit them from the envelope.</p></div>`);
+      parts.push(...fromEnv.map(([g, st]) => goalCard(g, st)));
+    }
+    $('#goal-list').innerHTML = parts.length ? parts.join('') : `<section class="card"><p class="empty">No goals yet. Use "New goal" to set one, such as an emergency fund
+      across your savings accounts or a net worth you want to reach. Envelopes with a "Have a balance" target show here too.</p></section>`;
 
     for (const [g, st] of statuses) {
-      const el = document.getElementById(`goal-chart-${g.id}`);
+      const el = document.getElementById(`goal-chart-${g.id.replace(':', '-')}`);
       Charts.lines(el, {
         labels: st.history.map((h) => fmtMonth(h.month).split(' ')[0]),
         series: [
@@ -3266,11 +3285,24 @@
     }
 
     // Celebrate each milestone once, the first time it is seen this month or later.
+    // An envelope target keeps its celebrated milestone on the envelope.
     if (month >= thisMonth()) {
+      // An envelope target seen here for the first time starts from where it is.
+      let silent = false;
+      for (const [g, st] of fromEnv) {
+        const env = budget.envelopes.find((e) => e.id === g.envelopeId);
+        if (env && env.goalCelebrated === undefined) { env.goalCelebrated = st.milestone; g.celebrated = st.milestone; silent = true; }
+      }
+      if (silent) scheduleSave();
       const fresh = statuses.filter(([g, st]) => st.milestone > (g.celebrated || 0));
       if (fresh.length) {
         const [g, st] = fresh[0];
-        for (const [goal, s2] of fresh) goal.celebrated = s2.milestone;
+        for (const [goal, s2] of fresh) {
+          if (goal.fromEnvelope) {
+            const env = budget.envelopes.find((e) => e.id === goal.envelopeId);
+            if (env) env.goalCelebrated = s2.milestone;
+          } else goal.celebrated = s2.milestone;
+        }
         scheduleSave();
         celebrate(st.milestone === 100 ? `🎉 You reached ${g.name}!` : `🎉 ${g.name} is ${st.milestone}% there`);
         Sounds.play(st.milestone === 100 ? 'bigFanfare' : 'chime');
