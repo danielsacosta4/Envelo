@@ -7,6 +7,8 @@
 //   envelo reset-password <email>    set a temporary password (changed at next sign-in)
 //   envelo reset-2fa <email>         turn off two-step sign-in for someone who lost their phone
 //   envelo delete-user <email>       delete an account and its data
+//   envelo invite <email>            let someone create an account
+//   envelo registration [open|invite|closed]   who may create an account
 //
 // They talk to the running server on this machine, proving themselves with
 // the token the server writes to DATA_DIR/admin.token.
@@ -24,13 +26,27 @@ function usage() {
   envelo reset-password <email>    give someone a temporary password
   envelo reset-2fa <email>         turn off two-step sign-in for someone
   envelo delete-user <email>       delete an account and all its data
+  envelo invite <email>            let someone create an account
+  envelo registration [mode]       show or set who may sign up:
+                                   open, invite (default) or closed
 `);
 }
 
 async function call(command, body = {}) {
   let token;
   try {
-    token = fs.readFileSync(path.join(DATA_DIR, 'admin.token'), 'utf8').trim();
+    // The data folder belongs to the service user, so the token file is
+    // opened without following links and must be a small plain file: this
+    // command runs as root and must not be tricked into sending another file.
+    const fd = fs.openSync(path.join(DATA_DIR, 'admin.token'), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    try {
+      const st = fs.fstatSync(fd);
+      if (!st.isFile() || st.size > 200) throw new Error('not a token');
+      token = fs.readFileSync(fd, 'utf8').trim();
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (!/^[0-9a-f]{20,100}$/.test(token)) throw new Error('not a token');
   } catch {
     throw new Error(`Cannot read ${path.join(DATA_DIR, 'admin.token')}. Run this as root on the Envelo server while Envelo is running.`);
   }
@@ -52,12 +68,25 @@ async function call(command, body = {}) {
 async function main() {
   const [command, email] = process.argv.slice(2);
   if (!command || command === 'help' || command === '--help') return usage();
-  const needEmail = ['reset-password', 'reset-2fa', 'delete-user'];
+  const needEmail = ['reset-password', 'reset-2fa', 'delete-user', 'invite'];
   if (needEmail.includes(command) && !email) throw new Error(`Usage: envelo ${command} <email>`);
   if (command === 'users') {
-    const { users } = await call('users');
+    const { users, invites = [], registration } = await call('users');
     if (!users.length) console.log('No accounts yet.');
     for (const u of users) console.log(`${u.email}${u.twofa ? '  (two-step sign-in on)' : ''}  created ${String(u.createdAt || '').slice(0, 10)}`);
+    if (invites.length) console.log(`Invited, no account yet: ${invites.join(', ')}`);
+    if (registration) console.log(`Sign-up: ${registration}`);
+  } else if (command === 'invite') {
+    const r = await call('invite', { email });
+    console.log(`${r.email} can now create an account.`);
+  } else if (command === 'registration') {
+    if (!email) {
+      const { registration } = await call('users');
+      console.log(`Sign-up is ${registration}. Change it with: envelo registration open|invite|closed`);
+    } else {
+      const r = await call('registration', { mode: email });
+      console.log(`Sign-up is now ${r.registration}.`);
+    }
   } else if (command === 'reset-password') {
     const r = await call('reset-password', { email });
     console.log(`Temporary password for ${r.email}: ${r.temporaryPassword}`);

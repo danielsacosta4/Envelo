@@ -58,3 +58,16 @@ test('imports an Actual export with the sqlite3 command', { skip: !hasPython || 
 test('rejects files that are not Actual exports', () => {
   assert.throws(() => readZipEntry(Buffer.from('not a zip at all, definitely not'), 'db.sqlite'), /not a zip/);
 });
+
+test('a zip that unpacks to far more than it says is refused', () => {
+  const zlib = require('node:zlib');
+  const { readZipEntry } = require('../server/actual-import.js');
+  const raw = zlib.deflateRawSync(Buffer.alloc(250 * 1024 * 1024));
+  const name = Buffer.from('db.sqlite');
+  const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(8, 8); lh.writeUInt32LE(raw.length, 18); lh.writeUInt32LE(1000, 22); lh.writeUInt16LE(name.length, 26);
+  const cd = Buffer.alloc(46); cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt16LE(8, 10); cd.writeUInt32LE(raw.length, 20); cd.writeUInt32LE(1000, 24); cd.writeUInt16LE(name.length, 28);
+  const body = Buffer.concat([lh, name, raw]);
+  const cdBuf = Buffer.concat([cd, name]);
+  const eocd = Buffer.alloc(22); eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(1, 8); eocd.writeUInt16LE(1, 10); eocd.writeUInt32LE(cdBuf.length, 12); eocd.writeUInt32LE(body.length, 16);
+  assert.throws(() => readZipEntry(Buffer.concat([body, cdBuf, eocd]), 'db.sqlite'), /too large/);
+});

@@ -15,6 +15,10 @@ const { execFileSync } = require('node:child_process');
 const newId = () => crypto.randomUUID();
 
 // Return the bytes of one file in a zip, or null if it is not there.
+// An Actual budget is a few MB; anything that unpacks to more than this is
+// refused before it can fill the memory (a "zip bomb").
+const MAX_UNPACKED = 200 * 1024 * 1024;
+
 function readZipEntry(buf, wanted) {
   let eocd = -1;
   for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
@@ -27,6 +31,7 @@ function readZipEntry(buf, wanted) {
     if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error('The zip archive is damaged.');
     const method = buf.readUInt16LE(p + 10);
     const compressedSize = buf.readUInt32LE(p + 20);
+    const declaredSize = buf.readUInt32LE(p + 24);
     const nameLen = buf.readUInt16LE(p + 28);
     const extraLen = buf.readUInt16LE(p + 30);
     const commentLen = buf.readUInt16LE(p + 32);
@@ -37,9 +42,18 @@ function readZipEntry(buf, wanted) {
 
     if (buf.readUInt32LE(localOffset) !== 0x04034b50) throw new Error('The zip archive is damaged.');
     const start = localOffset + 30 + buf.readUInt16LE(localOffset + 26) + buf.readUInt16LE(localOffset + 28);
+    if (declaredSize > MAX_UNPACKED) throw new Error('This file is too large to import.');
     const data = buf.subarray(start, start + compressedSize);
     if (method === 0) return data;
-    if (method === 8) return zlib.inflateRawSync(data);
+    if (method === 8) {
+      // The declared size can lie, so the unpacking itself is capped too.
+      try {
+        return zlib.inflateRawSync(data, { maxOutputLength: MAX_UNPACKED });
+      } catch (err) {
+        if (err.code === 'ERR_BUFFER_TOO_LARGE' || /larger than|too large/i.test(err.message)) throw new Error('This file is too large to import.');
+        throw new Error('The zip archive is damaged.');
+      }
+    }
     throw new Error('The zip uses a compression method Envelo cannot read.');
   }
   return null;

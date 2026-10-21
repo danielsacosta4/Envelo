@@ -157,6 +157,7 @@
     } catch (err) {
       if (err.status === 401) {
         inFlight = false;
+        forgetCachedData();
         showAuth('Your session ended. Sign in again. Unsaved changes are kept on this screen until you do.');
         return;
       }
@@ -340,7 +341,7 @@
     changed.slice(0, 8).forEach((id, k) => {
       const old = before.get(id);
       const env = now.get(id);
-      const row = document.querySelector(`[data-env-row="${id}"]`);
+      const row = document.querySelector(`[data-env-row="${CSS.escape(id)}"]`);
       const input = row && row.querySelector('input[data-env]');
       if (!row || !input || !input.offsetParent) return;
       const delay = k * 90;
@@ -466,7 +467,7 @@
   // money, red (and clickable, to cover it) when overspent, grey at zero.
   function chip(e) {
     if (e.available < 0) {
-      return `<button type="button" class="chip neg" data-action="cover" data-id="${e.id}" title="Cover this overspending">${esc(money(e.available))}</button>`;
+      return `<button type="button" class="chip neg" data-action="cover" data-id="${esc(e.id)}" title="Cover this overspending">${esc(money(e.available))}</button>`;
     }
     const cls = e.available === 0 ? 'zero' : e.underfunded ? 'low' : 'ok';
     return `<span class="chip ${cls}">${esc(money(e.available))}</span>`;
@@ -498,24 +499,24 @@
           aria-label="${esc(e.name)} target ${pct}%"><i style="width:${pct}%"></i></div>`
       : '';
     const fund = isHiddenRow
-      ? `<button type="button" class="btn sm" data-action="unhide-envelope" data-id="${e.id}">Unhide</button>`
+      ? `<button type="button" class="btn sm" data-action="unhide-envelope" data-id="${esc(e.id)}">Unhide</button>`
       : e.underfunded
-        ? `<button type="button" class="btn sm fund" data-action="fund" data-id="${e.id}" data-amount="${e.needed}">Assign ${esc(money(e.needed))}</button>`
+        ? `<button type="button" class="btn sm fund" data-action="fund" data-id="${esc(e.id)}" data-amount="${e.needed}">Assign ${esc(money(e.needed))}</button>`
         : e.target ? '<span class="stamp done">Funded ✓</span>' : '';
     const { text } = splitEmoji(e.name);
     const kids = e.kids || [];
     const family = kids.length
       ? `<div class="family">${kids.length} inside · ${esc(money(kids.reduce((t, c) => t + c.available, e.available)))} available in all</div>`
       : '';
-    const cell = reordering && !isHiddenRow ? moveButtons('move-env', `data-id="${e.id}"`, text) : fund;
+    const cell = reordering && !isHiddenRow ? moveButtons('move-env', `data-id="${esc(e.id)}"`, text) : fund;
     const inboxNote = e.inbox && e.activity < 0
-      ? `<div class="goal short">${esc(money(-e.activity))} spent without an envelope, already taken from Ready to Assign. <button type="button" class="link" data-action="categorise" data-id="${e.id}">Give them envelopes →</button></div>`
+      ? `<div class="goal short">${esc(money(-e.activity))} spent without an envelope, already taken from Ready to Assign. <button type="button" class="link" data-action="categorise" data-id="${esc(e.id)}">Give them envelopes →</button></div>`
       : '';
-    return `<div class="env${e.isSub ? ' sub' : ''}${kids.length ? ' parent' : ''}" data-env-row="${e.id}">
+    return `<div class="env${e.isSub ? ' sub' : ''}${kids.length ? ' parent' : ''}" data-env-row="${esc(e.id)}">
       <div class="env-cell">${tile(e.name)}<div class="env-text">
-        <div class="env-name"><button type="button" class="env-link" data-action="edit-target" data-id="${e.id}" title="Edit envelope and target">${esc(text)}</button>${e.overspent ? '<span class="stamp over">Overspent</span>' : ''}${shared ? '<span class="stamp shared" title="Shared with someone">Shared</span>' : ''}</div>
+        <div class="env-name"><button type="button" class="env-link" data-action="edit-target" data-id="${esc(e.id)}" title="Edit envelope and target">${esc(text)}</button>${e.overspent ? '<span class="stamp over">Overspent</span>' : ''}${shared ? '<span class="stamp shared" title="Shared with someone">Shared</span>' : ''}</div>
         ${goal}${family}${inboxNote}</div></div>
-      <div class="c" data-label="Assigned"><input type="text" inputmode="decimal" class="amt ${state}" aria-label="Assigned to ${esc(e.name)}" value="${B.toInput(e.assigned)}" data-env="${e.id}"></div>
+      <div class="c" data-label="Assigned"><input type="text" inputmode="decimal" class="amt ${state}" aria-label="Assigned to ${esc(e.name)}" value="${B.toInput(e.assigned)}" data-env="${esc(e.id)}"></div>
       <div class="c spent" data-label="Spent">${esc(money(e.activity))}</div>
       <div class="c" data-label="Available">${chip(e)}</div>
       <div class="c fund-cell">${cell}</div>
@@ -742,12 +743,12 @@
       const bal = B.accountBalance(budget, a.id);
       const rec = a.reconciledAt ? `Reconciled ${esc(a.reconciledAt)} at ${esc(money(a.reconciledBalance))}` : 'Never reconciled';
       return `<div class="account-row">
-        <div><div class="env-name"><button type="button" class="env-link" data-action="open-account" data-id="${a.id}">${esc(a.name)}</button>${a.offBudget ? '<span class="stamp off">Off budget</span>' : ''}${a.loan ? '<span class="stamp shared">Loan</span>' : ''}</div><div class="goal">${rec}</div></div>
+        <div><div class="env-name"><button type="button" class="env-link" data-action="open-account" data-id="${esc(a.id)}">${esc(a.name)}</button>${a.offBudget ? '<span class="stamp off">Off budget</span>' : ''}${a.loan ? '<span class="stamp shared">Loan</span>' : ''}</div><div class="goal">${rec}</div></div>
         <div class="acct-bal ${bal < 0 ? 'neg' : ''}">${esc(money(bal))}</div>
         <div class="row acct-actions">
-          <button type="button" class="btn sm" data-action="reconcile" data-id="${a.id}">Reconcile</button>
-          <button type="button" class="btn sm" data-action="rename-account" data-id="${a.id}">Rename</button>
-          <button type="button" class="btn sm danger" data-action="delete-account" data-id="${a.id}">Delete</button>
+          <button type="button" class="btn sm" data-action="reconcile" data-id="${esc(a.id)}">Reconcile</button>
+          <button type="button" class="btn sm" data-action="rename-account" data-id="${esc(a.id)}">Rename</button>
+          <button type="button" class="btn sm danger" data-action="delete-account" data-id="${esc(a.id)}">Delete</button>
         </div>
       </div>`;
     }).join('') : '<p class="empty">No accounts yet. Add the bank accounts and cash you budget with.</p>';
@@ -797,13 +798,13 @@
         : B.countsAsIncome(budget, t) ? 'Ready to Assign' : '—';
       return `<tr>
         <td class="nowrap">${esc(t.date)}</td>
-        <td><button type="button" class="env-link" data-action="edit-tx" data-id="${t.id}">${esc(t.payee || (t.amount > 0 ? 'Income' : 'Spending'))}</button>${t.splitId ? '<span class="split-mark">split</span>' : ''}${receiptBtn(t)}
+        <td><button type="button" class="env-link" data-action="edit-tx" data-id="${esc(t.id)}">${esc(t.payee || (t.amount > 0 ? 'Income' : 'Spending'))}</button>${t.splitId ? '<span class="split-mark">split</span>' : ''}${receiptBtn(t)}
           ${t.note ? `<div class="goal">${esc(t.note)}</div>` : ''}</td>
         <td>${esc(where)}</td>
         <td class="num ${t.amount > 0 ? 'in' : ''}">${t.amount > 0 ? '+' : ''}${esc(money(t.amount))}</td>
         <td class="num ${balance < 0 ? 'neg' : ''}">${esc(money(balance))}</td>
         <td class="num">${t.reconciled ? '<span title="Reconciled">✓</span>' : ''}
-          <button type="button" class="icon" data-action="delete-tx" data-id="${t.id}" aria-label="Delete transaction">&times;</button></td>
+          <button type="button" class="icon" data-action="delete-tx" data-id="${esc(t.id)}" aria-label="Delete transaction">&times;</button></td>
       </tr>`;
     }).join('') : '<tr><td colspan="6" class="empty">No transactions match.</td></tr>';
   }
@@ -824,10 +825,10 @@
   function ruleRow(r, date = r.next) {
     const sign = r.kind === 'income' ? '+' : '-';
     return `<li class="upcoming-row">
-      <div class="tx-main"><button type="button" class="env-link" data-action="edit-rule" data-id="${r.id}">${esc(r.payee || (r.kind === 'income' ? 'Income' : r.kind === 'transfer' ? 'Transfer' : 'Spending'))}</button>${r.receiptId ? ` ${r.receiptType === 'pdf' ? '📄' : '📎'}` : ''}
+      <div class="tx-main"><button type="button" class="env-link" data-action="edit-rule" data-id="${esc(r.id)}">${esc(r.payee || (r.kind === 'income' ? 'Income' : r.kind === 'transfer' ? 'Transfer' : 'Spending'))}</button>${r.receiptId ? ` ${r.receiptType === 'pdf' ? '📄' : '📎'}` : ''}
         <div class="tx-meta">${esc(r.freq === 'once' || date !== r.next ? fmtDay(date) : ruleWhen(r))}${r.freq === 'once' ? '' : ' · repeats'} · ${esc(ruleWhere(r))}</div></div>
       <div class="tx-amt ${r.kind === 'income' ? 'in' : ''}">${sign}${esc(money(r.amount))}</div>
-      <button type="button" class="icon tx-del" data-action="remove-recurring" data-id="${r.id}" aria-label="${r.freq === 'once' ? 'Cancel this scheduled transaction' : 'Stop repeating'}">&times;</button>
+      <button type="button" class="icon tx-del" data-action="remove-recurring" data-id="${esc(r.id)}" aria-label="${r.freq === 'once' ? 'Cancel this scheduled transaction' : 'Stop repeating'}">&times;</button>
     </li>`;
   }
   function renderRecurring() {
@@ -859,7 +860,7 @@
     openTx();
     editingRule = r.id;
     const f = $('#tx-form');
-    f.querySelector(`input[name="kind"][value="${r.kind}"]`).checked = true;
+    { const radio = f.querySelector(`input[name="kind"][value="${CSS.escape(String(r.kind))}"]`); if (radio) radio.checked = true; }
     f.date.value = r.next;
     f.payee.value = r.payee || '';
     f.amount.value = B.toInput(r.amount);
@@ -1030,12 +1031,12 @@
     // edited already uses one.
     const pickable = budget.envelopes.filter((e) => !B.isHidden(budget, e) || e.id === current);
     sel.innerHTML = pickable.length
-      ? pickable.map((e) => `<option value="${e.id}">${esc(e.group)} · ${esc(e.name)}</option>`).join('')
+      ? pickable.map((e) => `<option value="${esc(e.id)}">${esc(e.group)} · ${esc(e.name)}</option>`).join('')
       : '<option value="">Add an envelope first</option>';
     if (budget.envelopes.some((e) => e.id === current)) sel.value = current;
 
     const acctOptions = budget.accounts.length
-      ? budget.accounts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')
+      ? budget.accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')
       : '<option value="">Main account (created automatically)</option>';
     for (const id of ['#tx-account', '#tx-to']) {
       const el = $(id);
@@ -1069,7 +1070,7 @@
   const receiptBtn = (t) => {
     if (!t.receiptId) return '';
     const pdf = t.receiptType === 'pdf';
-    return `<button type="button" class="receipt-btn" data-action="view-receipt" data-id="${esc(t.receiptId)}" data-tx="${t.id}"${pdf ? ' data-type="pdf"' : ''} title="${pdf ? 'Open the PDF' : 'See the photo'}" aria-label="${pdf ? 'Open the PDF' : 'See the photo'}">${pdf ? '📄' : '📎'}</button>`;
+    return `<button type="button" class="receipt-btn" data-action="view-receipt" data-id="${esc(t.receiptId)}" data-tx="${esc(t.id)}"${pdf ? ' data-type="pdf"' : ''} title="${pdf ? 'Open the PDF' : 'See the photo'}" aria-label="${pdf ? 'Open the PDF' : 'See the photo'}">${pdf ? '📄' : '📎'}</button>`;
   };
 
   function renderTransactions() {
@@ -1083,7 +1084,7 @@
       const label = t.payee || (t.envelopeId || t.legs ? 'Spending' : 'Income');
       const by = t.createdBy && account && t.createdBy !== account.email ? ` · by ${esc(t.createdBy)}` : '';
       return `<li>
-        <div class="tx-main"><button type="button" class="env-link" data-action="edit-tx" data-id="${t.id}">${esc(label)}</button>${receiptBtn(t)}
+        <div class="tx-main"><button type="button" class="env-link" data-action="edit-tx" data-id="${esc(t.id)}">${esc(label)}</button>${receiptBtn(t)}
           <div class="tx-meta">${esc(t.date.slice(8))} · ${esc(whereText(t, names))}${by}</div></div>
         <div class="tx-amt ${t.amount > 0 ? 'in' : ''}">${t.amount > 0 ? '+' : ''}${esc(money(t.amount))}</div>
       </li>`;
@@ -1096,8 +1097,8 @@
     const envSel = $('#search-envelope');
     const keepA = acctSel.value;
     const keepE = envSel.value;
-    acctSel.innerHTML = `<option value="">All</option>${budget.accounts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}`;
-    envSel.innerHTML = `<option value="">All</option>${budget.envelopes.map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}`;
+    acctSel.innerHTML = `<option value="">All</option>${budget.accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}`;
+    envSel.innerHTML = `<option value="">All</option>${budget.envelopes.map((e) => `<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('')}`;
     acctSel.value = budget.accounts.some((a) => a.id === keepA) ? keepA : '';
     envSel.value = budget.envelopes.some((e) => e.id === keepE) ? keepE : '';
     const found = B.searchTransactions(budget, {
@@ -1110,18 +1111,41 @@
     const shown = found.slice(0, 400);
     $('#search-rows').innerHTML = shown.length ? shown.map((t) => `<tr>
       <td class="nowrap">${esc(t.date)}</td>
-      <td><button type="button" class="env-link" data-action="edit-tx" data-id="${t.id}">${esc(t.payee || (t.amount > 0 ? 'Income' : 'Spending'))}</button>${t.splitId ? '<span class="split-mark">split</span>' : ''}${receiptBtn(t)}
+      <td><button type="button" class="env-link" data-action="edit-tx" data-id="${esc(t.id)}">${esc(t.payee || (t.amount > 0 ? 'Income' : 'Spending'))}</button>${t.splitId ? '<span class="split-mark">split</span>' : ''}${receiptBtn(t)}
         ${t.note ? `<div class="goal">${esc(t.note)}</div>` : ''}</td>
       <td>${esc(t.envelopeId ? names[t.envelopeId] || 'Deleted envelope' : t.transferId ? 'Transfer' : '—')}</td>
       <td>${esc(accountName(t.accountId))}</td>
       <td class="num ${t.amount > 0 ? 'in' : ''}">${t.amount > 0 ? '+' : ''}${esc(money(t.amount))}</td>
-      <td class="num"><button type="button" class="icon" data-action="delete-tx" data-id="${t.id}" aria-label="Delete transaction">&times;</button></td>
+      <td class="num"><button type="button" class="icon" data-action="delete-tx" data-id="${esc(t.id)}" aria-label="Delete transaction">&times;</button></td>
     </tr>`).join('') + (found.length > shown.length ? `<tr><td colspan="6" class="empty">Showing the newest ${shown.length}. Narrow the search to see the rest.</td></tr>` : '')
       : '<tr><td colspan="6" class="empty">Nothing matches.</td></tr>';
   }
 
   // Settings page
+  // Invites: while sign-up is invite-only, only these emails can create an account.
+  async function renderInvites() {
+    try {
+      const res = await api('GET', '/api/invites');
+      $('#invite-mode').textContent = res.mode === 'open' ? 'Anyone can create an account on this Envelo right now.'
+        : res.mode === 'closed' ? 'New accounts are switched off on this Envelo (change it with the envelo command on the server).'
+        : 'Only invited emails can create an account here. Sharing envelopes with someone invites them too.';
+      $('#invite-list').innerHTML = res.invites.map((e) => `<li><div class="tx-main">${esc(e)}<div class="tx-meta">Invited, no account yet</div></div>
+        <button type="button" class="icon tx-del" data-action="remove-invite" data-email="${esc(e)}" aria-label="Cancel the invite for ${esc(e)}">&times;</button></li>`).join('');
+    } catch { /* offline */ }
+  }
+  $('#invite-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    try {
+      await api('POST', '/api/invites', { email: f.email.value });
+      toast(`Invited ${f.email.value.trim()}. They can now create an account with that email.`);
+      f.reset();
+      renderInvites();
+    } catch (err) { showError(err.message); }
+  });
+
   function renderSettings() {
+    renderInvites();
     $('#theme').value = readTheme();
     $('#density').value = readDensity();
     $('#font').value = readFont();
@@ -1246,10 +1270,13 @@
       });
       return;
     }
+    const pass = await askPassword('Turn on two-step sign-in', 'Enter your password to start.', 'Continue');
+    if (!pass) return;
     let setup;
     try {
-      setup = await api('POST', '/api/2fa/setup');
+      setup = await api('POST', '/api/2fa/setup', { password: pass });
     } catch (err) {
+      $('#twofa-dialog').close();
       showError(err.message);
       return;
     }
@@ -1268,7 +1295,7 @@
         <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required></label>
         <p class="auth-message" id="tf-err" hidden></p>
         <div class="row"><button type="submit" class="btn primary">Turn on</button><button type="button" class="btn" data-action="close-dialog">Cancel</button></div></form>`;
-    d.showModal();
+    if (!d.open) d.showModal();
     $('#tf-form').addEventListener('submit', async (ev) => {
       ev.preventDefault();
       try {
@@ -1341,6 +1368,13 @@
       $('#auth-hint').textContent = authMode === 'login'
         ? ''
         : 'Passwords must be at least 8 characters. Your budget is stored on this server, so you can use it from any device.';
+      if (authMode === 'register') {
+        fetch('/api/registration').then((r) => r.json()).then((r) => {
+          if (authMode !== 'register') return;
+          if (r.mode === 'invite') $('#auth-hint').textContent = 'This Envelo is invite-only: use the email you were invited with. Passwords must be at least 8 characters.';
+          if (r.mode === 'closed') $('#auth-hint').textContent = 'New accounts are switched off on this Envelo.';
+        }).catch(() => {});
+      }
       $('#auth-password').autocomplete = authMode === 'login' ? 'current-password' : 'new-password';
       $('#auth-message').hidden = true;
     });
@@ -1405,11 +1439,28 @@
     await flush();
     try {
       await api('POST', '/api/logout');
-    } catch {
-      // Ignore: the local session is cleared either way.
+    } catch (err) {
+      // Offline: the server still has the session, so signing out has not
+      // happened. Say so instead of pretending.
+      if (!err.status) {
+        showError('Could not sign out: there is no connection to Envelo. Try again when you are online.');
+        return;
+      }
     }
     dropPending();
+    await forgetCachedData();
     showAuth();
+  }
+  // Nothing from this account stays on the device after signing out.
+  async function forgetCachedData() {
+    try {
+      if (window.caches) {
+        for (const name of await caches.keys()) {
+          const c = await caches.open(name);
+          await Promise.all(['/api/me', '/api/budget', '/api/shares', '/api/version'].map((p2) => c.delete(p2)));
+        }
+      }
+    } catch { /* storage blocked */ }
   }
 
   // Events
@@ -1639,7 +1690,7 @@
       case 'stop-share': {
         const sh = shares.outgoing.find((x) => x.id === editingShare);
         if (sh && confirm(`Stop sharing with ${sh.member}? Spending they added stays in your budget.`)) {
-          api('DELETE', `/api/shares/${sh.id}`).then(() => { $('#share-dialog').close(); loadShares(); })
+          api('DELETE', `/api/shares/${esc(sh.id)}`).then(() => { $('#share-dialog').close(); loadShares(); })
             .catch((e) => { $('#share-error').textContent = e.message; $('#share-error').hidden = false; });
         }
         break;
@@ -1647,13 +1698,13 @@
       case 'leave-share': {
         const sh = shares.incoming.find((x) => x.id === btn.dataset.id);
         if (sh && confirm(`Leave the envelopes ${sh.owner} shared with you?`)) {
-          api('DELETE', `/api/shares/${sh.id}`).then(loadShares).catch((e) => showError(e.message));
+          api('DELETE', `/api/shares/${esc(sh.id)}`).then(loadShares).catch((e) => showError(e.message));
         }
         break;
       }
       case 'delete-shared-tx':
         if (confirm('Delete this spending?')) {
-          api('DELETE', `/api/shared/${btn.dataset.share}/transactions/${btn.dataset.id}`)
+          api('DELETE', `/api/shared/${btn.dataset.share}/transactions/${esc(btn.dataset.id)}`)
             .then((res) => { sharedData[btn.dataset.share] = { ...res, budget: B.fromJSON(res.budget) }; render(); Sounds.play('crumple'); })
             .catch((e) => showError(e.message));
         }
@@ -1722,6 +1773,12 @@
       case 'import-actual': $('#import-actual-file').click(); break;
       case 'bank-import': openBankImport(currentView === 'account' ? openAccountId : null); break;
       case 'logout': logout(); break;
+      case 'revoke-sessions':
+        api('POST', '/api/sessions/revoke', {}).then(() => toast('Signed out on every other device')).catch((err) => showError(err.message));
+        break;
+      case 'remove-invite':
+        api('DELETE', `/api/invites/${encodeURIComponent(btn.dataset.email)}`).then(renderInvites).catch((err) => showError(err.message));
+        break;
       case 'reset':
         if (confirm('Erase every envelope and transaction on your account? You can undo this right after.')) {
           attempt(() => { budget = B.create(); }, 'Erased all budget data');
@@ -1963,7 +2020,7 @@
     if (!mem) return;
     const f = $('#tx-form');
     if (!envTouched && !splitOn) {
-      f.querySelector(`input[name="kind"][value="${mem.kind}"]`).checked = true;
+      { const radio = f.querySelector(`input[name="kind"][value="${CSS.escape(String(mem.kind))}"]`); if (radio) radio.checked = true; }
       if (mem.envelopeId) f.envelopeId.value = mem.envelopeId;
     }
     if (mem.accountId && budget.accounts.some((a) => a.id === mem.accountId)) f.accountId.value = mem.accountId;
@@ -1973,7 +2030,7 @@
   // Splits
   function envelopeOptionsHtml(selected) {
     const pickable = budget.envelopes.filter((e) => !B.isHidden(budget, e) || e.id === selected);
-    return `<option value="">Pick an envelope</option>${pickable.map((e) => `<option value="${e.id}" ${e.id === selected ? 'selected' : ''}>${esc(e.group)} · ${esc(e.name)}</option>`).join('')}`;
+    return `<option value="">Pick an envelope</option>${pickable.map((e) => `<option value="${esc(e.id)}" ${e.id === selected ? 'selected' : ''}>${esc(e.group)} · ${esc(e.name)}</option>`).join('')}`;
   }
   function addSplitRow(envelopeId, amount) {
     const row = document.createElement('div');
@@ -2155,7 +2212,7 @@
     const f = $('#tx-form');
     const legs = main.splitId ? B.splitLegs(budget, main.id) : [main];
     const kind = B.transactionKind(main);
-    f.querySelector(`input[name="kind"][value="${kind}"]`).checked = true;
+    { const radio = f.querySelector(`input[name="kind"][value="${CSS.escape(String(kind))}"]`); if (radio) radio.checked = true; }
     f.date.value = main.date;
     f.payee.value = main.payee || '';
     f.amount.value = B.toInput(Math.abs(legs.reduce((s, l) => s + l.amount, 0)));
@@ -2312,7 +2369,7 @@
     $('#move-error').hidden = true;
     const view = B.monthView(budget, month);
     const envs = view.groups.flatMap((g) => g.envelopes).filter((e) => !e.hidden || e.id === to);
-    const opt = (e) => `<option value="${e.id}">${esc(e.name)} (${esc(money(e.available))})</option>`;
+    const opt = (e) => `<option value="${esc(e.id)}">${esc(e.name)} (${esc(money(e.available))})</option>`;
     const rta = `<option value="">Ready to Assign (${esc(money(view.readyToAssign))})</option>`;
     f.from.innerHTML = rta + envs.map(opt).join('');
     f.to.innerHTML = rta + envs.map(opt).join('');
@@ -2433,7 +2490,7 @@
     }
     await Promise.all(shares.incoming.map(async (sh) => {
       try {
-        const res = await api('GET', `/api/shared/${sh.id}`);
+        const res = await api('GET', `/api/shared/${esc(sh.id)}`);
         sharedData[sh.id] = { ...res, budget: B.fromJSON(res.budget) };
       } catch {
         delete sharedData[sh.id];
@@ -2453,7 +2510,7 @@
       const envs = sh.envelopeIds.map((id) => names[id]).filter(Boolean);
       return `<li>
         <div class="tx-meta">${sh.role === 'edit' ? 'Can add spending and money' : 'Can see'} · ${envs.length} envelope${envs.length === 1 ? '' : 's'}</div>
-        <div><button type="button" class="env-link" data-action="edit-share" data-id="${sh.id}">${esc(sh.member)}</button></div>
+        <div><button type="button" class="env-link" data-action="edit-share" data-id="${esc(sh.id)}">${esc(sh.member)}</button></div>
         <div class="tx-meta share-envs">${esc(envs.join(', '))}</div>
       </li>`;
     }).join('');
@@ -2481,7 +2538,7 @@
     $('#share-picks').innerHTML = `<legend>Envelopes</legend>${[...groups].map(([group, envs]) => `<div class="pick-group">
       <label class="check pick-group-head"><input type="checkbox" data-pick-group="${esc(group)}" ${envs.every((e) => picked.has(e.id)) ? 'checked' : ''}>
         <span>${esc(group)}</span></label>
-      ${envs.map((e) => `<label class="check"><input type="checkbox" name="pick" value="${e.id}" data-group="${esc(group)}" ${picked.has(e.id) ? 'checked' : ''}><span>${esc(e.name)}</span></label>`).join('')}
+      ${envs.map((e) => `<label class="check"><input type="checkbox" name="pick" value="${esc(e.id)}" data-group="${esc(group)}" ${picked.has(e.id) ? 'checked' : ''}><span>${esc(e.name)}</span></label>`).join('')}
     </div>`).join('') || '<p class="hint">Add envelopes first.</p>'}`;
     $('#share-dialog').showModal();
   }
@@ -2507,9 +2564,7 @@
     try {
       const res = await api('POST', '/api/shares', { member: f.member.value, role: f.role.value, envelopeIds });
       $('#share-dialog').close();
-      toast(res.registered
-        ? `Shared ${envelopeIds.length} envelope${envelopeIds.length === 1 ? '' : 's'} with ${res.share.member}`
-        : `Shared. ${res.share.member} will see it after creating an account with that email.`);
+      toast(`Shared ${envelopeIds.length} envelope${envelopeIds.length === 1 ? '' : 's'} with ${res.share.member}. If they have no account yet, they can create one with that email.`);
       await loadShares();
     } catch (err) {
       $('#share-error').textContent = err.message;
@@ -2534,7 +2589,7 @@
       const txs = b.transactions.filter((t) => t.date.slice(0, 7) === month).sort((x, y) => (x.date < y.date ? 1 : -1));
       const envName = Object.fromEntries(b.envelopes.map((e) => [e.id, e.name]));
       const canEdit = sh.role === 'edit';
-      return `<section class="card shared-card" data-share="${sh.id}">
+      return `<section class="card shared-card" data-share="${esc(sh.id)}">
         <div class="card-head">
           <h2>From ${esc(sh.owner)}</h2>
           <span class="hint">${canEdit ? 'You can add spending and money' : 'You can see these envelopes'}</span>
@@ -2543,7 +2598,7 @@
           <thead><tr><th>Envelope</th><th class="num">Assigned</th><th class="num">In / out</th><th class="num">Available</th></tr></thead>
           <tbody>${rows || '<tr><td colspan="4" class="empty">Nothing shared right now.</td></tr>'}</tbody>
         </table></div>
-        ${canEdit && b.envelopes.length ? `<form class="shared-form" data-share="${sh.id}" autocomplete="off">
+        ${canEdit && b.envelopes.length ? `<form class="shared-form" data-share="${esc(sh.id)}" autocomplete="off">
           <div class="segmented two" role="radiogroup" aria-label="What to add">
             <label><input type="radio" name="mode" value="spend" checked><span>Add spending</span></label>
             <label><input type="radio" name="mode" value="money"><span>Add money</span></label>
@@ -2551,8 +2606,8 @@
           <p class="hint mode-hint">Spending you paid from ${esc(sh.owner)}'s account.</p>
           <div class="shared-grid">
             <label>Amount <input type="text" name="amount" inputmode="decimal" required placeholder="0.00"></label>
-            <label>Envelope <select name="envelopeId">${b.envelopes.map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select></label>
-            <label><span class="acct-label">Paid from</span> <select name="accountId">${b.accounts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>
+            <label>Envelope <select name="envelopeId">${b.envelopes.map((e) => `<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('')}</select></label>
+            <label><span class="acct-label">Paid from</span> <select name="accountId">${b.accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}</select></label>
             <label>Date <input type="date" name="date" required value="${todayISO()}"></label>
             <label class="payee-field">Payee <input type="text" name="payee" maxlength="80" placeholder="Where it went"></label>
             <label>Note <input type="text" name="note" maxlength="140" placeholder="Optional"></label>
@@ -2565,9 +2620,9 @@
           <div class="tx-meta">${esc(t.date)} · ${esc(envName[t.envelopeId] || '')}${t.createdBy && t.createdBy !== me ? ` · by ${esc(t.createdBy)}` : ' · by you'}${t.note ? ` · ${esc(t.note)}` : ''}</div>
           <div><strong>${esc(t.payee || (t.amount > 0 ? 'Money added' : 'Spending'))}</strong></div>
           <div class="tx-amt ${t.amount > 0 ? 'in' : ''}">${t.amount > 0 ? '+' : ''}${esc(fmt(t.amount))}</div>
-          ${canEdit && t.createdBy === me ? `<button type="button" class="icon tx-del" data-action="delete-shared-tx" data-share="${sh.id}" data-id="${t.id}" aria-label="Delete">&times;</button>` : ''}
+          ${canEdit && t.createdBy === me ? `<button type="button" class="icon tx-del" data-action="delete-shared-tx" data-share="${esc(sh.id)}" data-id="${esc(t.id)}" aria-label="Delete">&times;</button>` : ''}
         </li>`).join('') : '<li class="tx-meta">Nothing added or spent this month.</li>'}</ul>
-        <button type="button" class="icon-text" data-action="leave-share" data-id="${sh.id}">Leave this share</button>
+        <button type="button" class="icon-text" data-action="leave-share" data-id="${esc(sh.id)}">Leave this share</button>
       </section>`;
     }).join('') || '<section class="card"><p class="empty">Nobody has shared envelopes with you.</p></section>';
   }
@@ -2640,7 +2695,7 @@
     }
     if (!csv.layout) {
       body.innerHTML = `<h2>Import a bank file</h2>${csvSteps(0)}
-        <label>Into account <select id="csv-account">${budget.accounts.map((a) => `<option value="${a.id}" ${a.id === csv.accountId ? 'selected' : ''}>${esc(a.name)}${a.csvLayout ? ' · layout remembered' : ''}</option>`).join('')}</select></label>
+        <label>Into account <select id="csv-account">${budget.accounts.map((a) => `<option value="${esc(a.id)}" ${a.id === csv.accountId ? 'selected' : ''}>${esc(a.name)}${a.csvLayout ? ' · layout remembered' : ''}</option>`).join('')}</select></label>
         <label class="btn file-btn">Choose a CSV file<input type="file" id="csv-file" accept=".csv,.txt,text/csv" hidden></label>
         <p class="hint">Download a CSV of the account from your bank's website or app. Revolut: Statement → Excel/CSV. N26: Downloads → CSV.
           Any bank works: Envelo works out the columns the first time and remembers them for this account.</p>
@@ -2693,7 +2748,7 @@
       const transfer = other ? `<option value="__transfer" ${pick === '__transfer' ? 'selected' : ''}>↔ Transfer ${t.amount > 0 ? 'from' : 'to'} ${esc(acctName(other.accountId))}</option>` : '';
       return `${transfer}<option value="" ${pick === '' ? 'selected' : ''}>${first}</option>
         <option value="__skip" ${pick === '__skip' ? 'selected' : ''}>Don't import</option>
-        ${budget.envelopes.filter((e) => !B.isHidden(budget, e) || e.id === pick).map((e) => `<option value="${e.id}" ${e.id === pick ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}`;
+        ${budget.envelopes.filter((e) => !B.isHidden(budget, e) || e.id === pick).map((e) => `<option value="${esc(e.id)}" ${e.id === pick ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}`;
     };
     const shown = marked.slice(0, 1000);
     $('#csv-body').innerHTML = `<h2>Import into ${esc(acct ? acct.name : '')}</h2>${csvSteps(1)}
@@ -2859,7 +2914,7 @@
   function renderPayees() {
     const rules = budget.payeeRules || [];
     $('#rules-list').innerHTML = rules.length
-      ? rules.map((r) => `<li><div class="tx-main"><button type="button" class="env-link" data-action="edit-payee-rule" data-id="${r.id}">${ruleText(r)}</button></div></li>`).join('')
+      ? rules.map((r) => `<li><div class="tx-main"><button type="button" class="env-link" data-action="edit-payee-rule" data-id="${esc(r.id)}">${ruleText(r)}</button></div></li>`).join('')
       : '<li class="tx-empty tx-meta">No rules yet. Make one from a payee below, or with + Rule.</li>';
     $('#rules-count').textContent = rules.length ? `${rules.length} rule${rules.length === 1 ? '' : 's'}` : '';
     $('#apply-rules').hidden = !rules.length;
@@ -2900,7 +2955,7 @@
     f.reset();
     $('#rule-error').hidden = true;
     $('#rule-title').textContent = r ? 'Payee rule' : 'New payee rule';
-    f.envelopeId.innerHTML = `<option value="">Don't change the envelope</option>${budget.envelopes.map((e) => `<option value="${e.id}">${esc(e.group)} · ${esc(e.name)}</option>`).join('')}`;
+    f.envelopeId.innerHTML = `<option value="">Don't change the envelope</option>${budget.envelopes.map((e) => `<option value="${esc(e.id)}">${esc(e.group)} · ${esc(e.name)}</option>`).join('')}`;
     f.match.value = r ? r.match : payee ? 'is' : 'contains';
     f.text.value = r ? r.text : payee;
     f.rename.value = r ? r.rename || '' : '';
@@ -2960,7 +3015,7 @@
     $('#check-body').innerHTML = `<div class="stack"><h2>Check accounts</h2>
       ${found ? '<p>Envelo found these. Untick anything that is not right, then fix.</p>' : '<p class="csv-ok">✓ Nothing to fix: no transfers counted as income, no history counted twice.</p>'}
       ${overlaps.length ? `<h3 class="sub-h">History counted twice</h3>
-        ${overlaps.map(([a, o]) => `<label class="check"><input type="checkbox" data-fix-start="${a.id}" checked>
+        ${overlaps.map(([a, o]) => `<label class="check"><input type="checkbox" data-fix-start="${esc(a.id)}" checked>
           <span><b>${esc(a.name)}</b>: ${o.count} imported row${o.count === 1 ? '' : 's'} on or before the starting balance (${esc(money(o.startAmount))} on ${esc(fmtDay(o.startDate))}) add ${esc(money(o.overlap))}.
           Fix: starting balance ${esc(money(o.newAmount))} on ${esc(fmtDay(o.newDate))}.</span></label>`).join('')}` : ''}
       ${pairs.length ? `<h3 class="sub-h">Transfers between your accounts</h3>
@@ -3189,7 +3244,7 @@
           : '<p class="status good">✓ Nothing was overspent</p><p>Every envelope stayed within what it had. 🎉</p>'}
         ${r.hints.map((h) => `<div class="hint-box"><span><b>${esc(h.name)}</b> was overspent in ${h.months} of the last 4 months.
           Raise its target to <b>${esc(money(h.suggest))}</b> a month?</span>
-          <button type="button" class="btn sm" data-action="apply-hint" data-id="${h.id}" data-amount="${h.suggest}">Set ${esc(money(h.suggest))}/month</button></div>`).join('')}
+          <button type="button" class="btn sm" data-action="apply-hint" data-id="${esc(h.id)}" data-amount="${h.suggest}">Set ${esc(money(h.suggest))}/month</button></div>`).join('')}
       </section>
       <section class="card wide"><h2>Where it went</h2>
         ${r.top.length ? `<ul class="insight-list">${r.top.map((t) => `<li class="row" style="justify-content:space-between"><b>${esc(t.name)}</b>
@@ -3231,8 +3286,8 @@
     const stones = st.milestones.map((m) => `<li class="${m.month ? 'hit' : ''}"><b>${m.percent}%</b>
       <span>${m.month ? esc(fmtMonth(m.month)) : esc(money(Math.round((g.amount * m.percent) / 100)))}</span></li>`).join('');
     const edit = g.fromEnvelope
-      ? `<button type="button" class="icon-text" data-action="edit-target" data-id="${g.envelopeId}">Edit</button>`
-      : `<button type="button" class="icon-text" data-action="edit-goal" data-id="${g.id}">Edit</button>`;
+      ? `<button type="button" class="icon-text" data-action="edit-target" data-id="${esc(g.envelopeId)}">Edit</button>`
+      : `<button type="button" class="icon-text" data-action="edit-goal" data-id="${esc(g.id)}">Edit</button>`;
     const { icon, text } = splitEmoji(g.name);
     const title = g.fromEnvelope && icon ? `<span class="goal-sticker" aria-hidden="true">${esc(icon)}</span>${esc(text)}` : esc(g.name);
     const source = g.fromEnvelope ? 'Envelope target' : goalSourceText(g);
@@ -3325,7 +3380,7 @@
       ? budget.accounts.map((a) => ({ id: a.id, label: a.name, sub: money(B.accountBalance(budget, a.id)) }))
       : budget.envelopes.filter((e) => !B.isHidden(budget, e) || selected.includes(e.id)).map((e) => ({ id: e.id, label: e.name, sub: e.group }));
     box.innerHTML = `<legend>${source === 'accounts' ? 'Accounts' : 'Envelopes'}</legend>${items.length ? items.map((it) => `<label class="check">
-      <input type="checkbox" name="pick" value="${it.id}" ${selected.includes(it.id) ? 'checked' : ''}>
+      <input type="checkbox" name="pick" value="${esc(it.id)}" ${selected.includes(it.id) ? 'checked' : ''}>
       <span>${esc(it.label)} <span class="optional">${esc(it.sub)}</span></span></label>`).join('') : '<p class="hint">None yet.</p>'}`;
   }
   $('#goal-form').source.addEventListener('change', () => renderGoalPicks());
@@ -3412,7 +3467,7 @@
   }
 
   function drawLoanChart(a, st) {
-    const el = document.getElementById(`loan-chart-${a.id}`);
+    const el = document.getElementById(`loan-chart-${esc(a.id)}`);
     if (!el) return;
     if (st.paidOff || st.plan.neverPaysOff) { el.hidden = true; return; }
     el.hidden = false;
@@ -3439,7 +3494,7 @@
       const cents = text ? B.parseMoney(text) : 0;
       loanExtra[a.id] = Number.isNaN(cents) || cents < 0 ? 0 : cents;
       const st = L.loanStatus(a.loan, loanTransactions(a.id), { today: todayISO(), extra: loanExtra[a.id] });
-      const box = document.querySelector(`.what-if[data-loan="${a.id}"] p`);
+      const box = document.querySelector(`.what-if[data-loan="${CSS.escape(a.id)}"] p`);
       if (box) box.innerHTML = whatIfText(a, st);
       drawLoanChart(a, st);
     }, 200);
@@ -3472,16 +3527,16 @@
           ${st.interestPaid == null ? '' : `<div><dt>Interest paid so far</dt><dd>${esc(money(st.interestPaid))}</dd></div>`}
           ${st.paidOff || st.plan.neverPaysOff ? '' : `<div><dt>Interest still to pay</dt><dd>${esc(money(st.plan.totalInterest))}</dd></div>`}
         </dl>
-        ${st.paidOff ? '' : `<div class="what-if" data-loan="${a.id}">
-          <label class="inline-label">Pay extra each month <input type="text" inputmode="decimal" data-loan-extra="${a.id}" value="${loanExtra[a.id] ? B.toInput(loanExtra[a.id]) : ''}" placeholder="0.00"></label>
+        ${st.paidOff ? '' : `<div class="what-if" data-loan="${esc(a.id)}">
+          <label class="inline-label">Pay extra each month <input type="text" inputmode="decimal" data-loan-extra="${esc(a.id)}" value="${loanExtra[a.id] ? B.toInput(loanExtra[a.id]) : ''}" placeholder="0.00"></label>
           <p>${whatIfText(a, st)}</p>
         </div>
-        <div class="chart loan-chart" id="loan-chart-${a.id}"></div>`}
+        <div class="chart loan-chart" id="loan-chart-${esc(a.id)}"></div>`}
         <div class="row">
-          ${st.paidOff ? '' : `<button type="button" class="btn sm" data-action="loan-interest" data-id="${a.id}" data-amount="${st.monthlyInterest}"
+          ${st.paidOff ? '' : `<button type="button" class="btn sm" data-action="loan-interest" data-id="${esc(a.id)}" data-amount="${st.monthlyInterest}"
             title="Adds the interest to the amount owed">${interestThisMonth ? '✓ Interest recorded this month' : `Record interest (${esc(money(st.monthlyInterest))})`}</button>`}
-          <button type="button" class="btn sm" data-action="edit-loan" data-id="${a.id}">Edit details</button>
-          <button type="button" class="btn sm" data-action="open-account" data-id="${a.id}">Open account</button>
+          <button type="button" class="btn sm" data-action="edit-loan" data-id="${esc(a.id)}">Edit details</button>
+          <button type="button" class="btn sm" data-action="open-account" data-id="${esc(a.id)}">Open account</button>
         </div>
       </article>`;
     }).join('') : `<section class="card"><p class="empty">No loans tracked yet. Use "Track a loan" to add a mortgage, car loan or personal loan,
@@ -3587,7 +3642,7 @@
     editingLoan = accountId;
     const acct = accountId && budget.accounts.find((a) => a.id === accountId);
     const free = budget.accounts.filter((a) => a.offBudget && !a.loan);
-    f.account.innerHTML = `${free.map((a) => `<option value="${a.id}">${esc(a.name)} (owes ${esc(money(-B.accountBalance(budget, a.id)))})</option>`).join('')}
+    f.account.innerHTML = `${free.map((a) => `<option value="${esc(a.id)}">${esc(a.name)} (owes ${esc(money(-B.accountBalance(budget, a.id)))})</option>`).join('')}
       <option value="new">A new account…</option>`;
     if (prefill) f.account.value = 'new';
     $('#loan-account-field').hidden = !!acct;
@@ -3742,7 +3797,7 @@
     el.parent.innerHTML = `<option value="">No, it is a main envelope</option>
       ${groups.map((g) => {
         const list = parents.filter((e) => e.group === g);
-        return list.length ? `<optgroup label="${esc(g)}">${list.map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</optgroup>` : '';
+        return list.length ? `<optgroup label="${esc(g)}">${list.map((e) => `<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('')}</optgroup>` : '';
       }).join('')}`;
     el.parent.value = parentId || '';
     el.parent.disabled = hasChildren;
@@ -3798,7 +3853,7 @@
     const others = budget.envelopes.filter((e) => e.id !== envId);
     const used = budget.transactions.some((t) => t.envelopeId === envId)
       || (budget.recurring || []).some((r) => r.envelopeId === envId);
-    f.moveTo.innerHTML = others.map((e) => `<option value="${e.id}">${esc(e.group)} · ${esc(e.name)}</option>`).join('');
+    f.moveTo.innerHTML = others.map((e) => `<option value="${esc(e.id)}">${esc(e.group)} · ${esc(e.name)}</option>`).join('');
     $('#move-to-field').hidden = !used;
     f.querySelector('.danger-zone').open = false;
     f.type.value = t ? t.type : '';

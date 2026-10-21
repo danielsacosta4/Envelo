@@ -20,6 +20,7 @@ set -Eeuo pipefail
 REPO="${REPO:-danielsacosta4/Envelo}"
 REF="${REF:-main}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+AUTOLOGIN="${AUTOLOGIN:-0}"
 RAW="https://raw.githubusercontent.com/$REPO/$REF/scripts/install"
 
 CTID="${CTID:-}"
@@ -116,7 +117,11 @@ if [[ "$MODE" == "advanced" ]]; then
   BRIDGE="$(ask "Network bridge (DHCP)" "$BRIDGE")"
   PORT="$(ask "Port for the Envelo web app" "$PORT")"
   REF="$(ask "Branch to install (main is the released version)" "$REF")"
+  if whiptail --title "Envelo" --defaultno --yesno "Log in to the container console as root without a password?\n\nConvenient, but anyone allowed to open this container's console in Proxmox becomes root in it." 11 70; then
+    AUTOLOGIN=1
+  fi
 fi
+[[ "$REF" =~ ^[A-Za-z0-9._/-]{1,100}$ && "$REF" != *..* ]] || die "The branch name has characters that are not allowed."
 
 # The branch may have changed in the menu.
 RAW="https://raw.githubusercontent.com/$REPO/$REF/scripts/install"
@@ -166,7 +171,7 @@ trap 'rm -f "$CT_SCRIPT"; on_error $LINENO' ERR
 fetch "$RAW/envelo-container.sh" > "$CT_SCRIPT" || die "Could not download the container install script from $RAW."
 pct push "$CTID" "$CT_SCRIPT" /root/envelo-container.sh
 rm -f "$CT_SCRIPT"
-pct exec "$CTID" -- env REPO="$REPO" REF="$REF" PORT="$PORT" GITHUB_TOKEN="$GITHUB_TOKEN" \
+pct exec "$CTID" -- env REPO="$REPO" REF="$REF" PORT="$PORT" GITHUB_TOKEN="$GITHUB_TOKEN" AUTOLOGIN="$AUTOLOGIN" \
   bash /root/envelo-container.sh
 
 PORT_SUFFIX=""
@@ -176,9 +181,17 @@ header "Envelo is ready"
 echo "  Open in a browser:  http://$IP$PORT_SUFFIX"
 echo "  Create your account on that page, then start budgeting."
 echo
-echo "  Console:            pct enter $CTID   (logs in automatically)"
+if [[ "$AUTOLOGIN" == "1" ]]; then
+  echo "  Console:            pct enter $CTID   (logs in automatically)"
+else
+  echo "  Console:            pct enter $CTID"
+fi
 echo "  Update Envelo:      pct exec $CTID -- update   (or type update in the container)"
 echo "  Data:               /var/lib/envelo inside the container; include it in Proxmox backups"
 echo
-echo "  Traffic is plain HTTP. Put it behind HTTPS before using it outside your home network,"
-echo "  then set SECURE_COOKIES=1 in /etc/systemd/system/envelo.service and restart envelo."
+echo "  Keys:               /etc/envelo/secret.key decrypts the data; back it up separately"
+echo
+echo "  Traffic is plain HTTP. Put it behind an HTTPS reverse proxy before using it outside your"
+echo "  home network. Envelo trusts the proxy's X-Forwarded-For/-Proto headers (TRUST_PROXY=1 in"
+echo "  /etc/envelo/envelo.env); set TRUST_PROXY=0 there if browsers reach Envelo directly."
+echo "  Sign-up is invite-only after the first account: invite people from Settings."

@@ -417,7 +417,17 @@
         </div>
         <div class="row">
           <button type="button" class="btn" data-action="logout">Sign out</button>
+          <button type="button" class="btn" data-action="revoke-sessions">Sign out everywhere else</button>
         </div>
+        <form id="invite-form" class="stack" autocomplete="off">
+          <h3 class="sub-h">Invite someone</h3>
+          <p class="hint" id="invite-mode"></p>
+          <div class="row grow-row">
+            <label>Email <input type="email" name="email" required placeholder="partner@example.com"></label>
+            <button type="submit" class="btn">Invite</button>
+          </div>
+          <ul id="invite-list" class="tx-list"></ul>
+        </form>
         <details class="danger-zone">
           <summary>Danger zone</summary>
           <button type="button" class="btn danger" data-action="reset">Erase all budget data</button>

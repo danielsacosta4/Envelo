@@ -11,20 +11,65 @@
 set -Eeuo pipefail
 export LC_ALL=C.UTF-8 LANG=C.UTF-8
 
+# Settings are read as KEY=VALUE lines, never run as shell code, and only
+# known keys are taken.
+load_env() {
+  local file="$1" line key value
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+    value="${value#\"}"; value="${value%\"}"
+    case "$key" in
+      REPO|REF|PORT|GITHUB_TOKEN|AUTOLOGIN|TRUST_PROXY|REGISTRATION|SECURE_COOKIES|RECEIPT_QUOTA_MB|DATA_DIR) export "$key=$value" ;;
+    esac
+  done < "$file"
+}
+
 MODE="${1:-install}"
 if [[ "$MODE" == "--refresh" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  . /etc/envelo/envelo.env
-  set +a
+  load_env /etc/envelo/envelo.env
+  load_env /etc/envelo/update.env
 fi
 
 : "${REPO:?REPO is not set}"
 : "${REF:?REF is not set}"
 : "${PORT:?PORT is not set}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
-# Console autologin only makes sense in a container; the generic installer turns it off.
-AUTOLOGIN="${AUTOLOGIN:-1}"
+# Console autologin: opt-in (anyone who may open the console gets root).
+AUTOLOGIN="${AUTOLOGIN:-0}"
+# Behind a reverse proxy (the usual setup): client addresses and HTTPS come
+# from its X-Forwarded-* headers. Set TRUST_PROXY=0 when browsers reach
+# Envelo directly.
+TRUST_PROXY="${TRUST_PROXY:-1}"
+REGISTRATION="${REGISTRATION:-invite}"
+
+# Values end up in config files and URLs: only plain ones are accepted.
+[[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "REPO must look like owner/name." >&2; exit 1; }
+[[ "$REF" =~ ^[A-Za-z0-9._/-]{1,100}$ && "$REF" != *..* ]] || { echo "REF must be a branch or tag name." >&2; exit 1; }
+{ [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( PORT >= 1 && PORT <= 65535 )); } || { echo "PORT must be a number from 1 to 65535." >&2; exit 1; }
+[[ "$GITHUB_TOKEN" =~ ^[A-Za-z0-9_]*$ ]] || { echo "GITHUB_TOKEN has unexpected characters." >&2; exit 1; }
+[[ "$AUTOLOGIN" =~ ^[01]$ && "$TRUST_PROXY" =~ ^[01]$ ]] || { echo "AUTOLOGIN and TRUST_PROXY must be 0 or 1." >&2; exit 1; }
+[[ "$REGISTRATION" =~ ^(open|invite|closed)$ ]] || { echo "REGISTRATION must be open, invite or closed." >&2; exit 1; }
+
+# The service reads envelo.env; only root reads update.env (the GitHub token
+# for private repositories is never handed to the web server).
+write_config() {
+  mkdir -p /etc/envelo
+  (
+    umask 077
+    {
+      printf '%s\n' "REPO=$REPO" "REF=$REF" "PORT=$PORT" "AUTOLOGIN=$AUTOLOGIN" "TRUST_PROXY=$TRUST_PROXY" "REGISTRATION=$REGISTRATION"
+      [[ -n "${SECURE_COOKIES:-}" ]] && printf '%s\n' "SECURE_COOKIES=$SECURE_COOKIES"
+      [[ -n "${RECEIPT_QUOTA_MB:-}" ]] && printf '%s\n' "RECEIPT_QUOTA_MB=$RECEIPT_QUOTA_MB"
+      true
+    } > /etc/envelo/envelo.env.new
+    printf '%s\n' "GITHUB_TOKEN=$GITHUB_TOKEN" > /etc/envelo/update.env.new
+  )
+  chmod 600 /etc/envelo/envelo.env.new /etc/envelo/update.env.new
+  mv -f /etc/envelo/envelo.env.new /etc/envelo/envelo.env
+  mv -f /etc/envelo/update.env.new /etc/envelo/update.env
+}
 
 msg_info() { printf '  \033[1;33m…\033[0m %s\n' "$*"; }
 msg_ok()   { printf '  \033[1;32m✔\033[0m %s\n' "$*"; }
@@ -37,35 +82,56 @@ install_update_command() {
 #!/usr/bin/env bash
 # Update Envelo to the latest code on the configured branch. Your data is kept.
 set -Eeuo pipefail
-set -a
-. /etc/envelo/envelo.env
-set +a
+# Settings are read as KEY=VALUE lines, never run as shell code, and only
+# known keys are taken.
+load_env() {
+  local file="$1" line key value
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+    value="${value#\"}"; value="${value%\"}"
+    case "$key" in
+      REPO|REF|PORT|GITHUB_TOKEN|AUTOLOGIN|TRUST_PROXY|REGISTRATION|SECURE_COOKIES|RECEIPT_QUOTA_MB|DATA_DIR) export "$key=$value" ;;
+    esac
+  done < "$file"
+}
+load_env /etc/envelo/envelo.env
+load_env /etc/envelo/update.env
+{ [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$REF" =~ ^[A-Za-z0-9._/-]{1,100}$ && "$REF" != *..* ]]; } \
+  || { echo "REPO or REF in /etc/envelo/envelo.env is not valid." >&2; exit 1; }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 AUTH=()
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-  AUTH=(-H "Authorization: Bearer $GITHUB_TOKEN")
+  # The header goes through a private file, not the command line, so the
+  # token does not show in the process list.
+  printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN" > "$TMP/curl.conf"
+  chmod 600 "$TMP/curl.conf"
+  AUTH=(--config "$TMP/curl.conf")
 fi
 echo "Downloading Envelo ($REF)..."
+TMP_CODE="$TMP/code"
+mkdir -p "$TMP_CODE"
 curl -fsSL "${AUTH[@]}" "https://codeload.github.com/$REPO/tar.gz/refs/heads/$REF" \
-  | tar xz -C "$TMP" --strip-components=1
+  | tar xz -C "$TMP_CODE" --strip-components=1
 # Keep a copy of the data from just before this update (the last 5 are kept).
 DATA_DIR="${DATA_DIR:-/var/lib/envelo}"
 if [[ -f "$DATA_DIR/db.json" ]]; then
-  mkdir -p "$DATA_DIR/backups"
+  install -d -m 0700 -o envelo -g envelo "$DATA_DIR/backups"
   OLD_VERSION="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' /opt/envelo/package.json 2>/dev/null || true)"
   cp -p "$DATA_DIR/db.json" "$DATA_DIR/backups/pre-update-${OLD_VERSION:-unknown}-$(date +%Y%m%d-%H%M%S).json"
   chown -R envelo:envelo "$DATA_DIR/backups" 2>/dev/null || true
   ls -1t "$DATA_DIR"/backups/pre-update-*.json 2>/dev/null | tail -n +6 | xargs -r rm -f
 fi
 rm -rf /opt/envelo.new && mkdir -p /opt/envelo.new
-cp -r "$TMP/server" "$TMP/src" "$TMP/index.html" /opt/envelo.new/
-[[ -f "$TMP/package.json" ]] && cp "$TMP/package.json" /opt/envelo.new/
+cp -r "$TMP_CODE/server" "$TMP_CODE/src" "$TMP_CODE/index.html" /opt/envelo.new/
+[[ -f "$TMP_CODE/package.json" ]] && cp "$TMP_CODE/package.json" /opt/envelo.new/
 rm -rf /opt/envelo && mv /opt/envelo.new /opt/envelo
 # Re-apply the container setup from the new version (autologin, banner, this
 # command). A problem here must never stop the restart below.
-if [[ -f "$TMP/scripts/install/envelo-container.sh" ]]; then
-  bash "$TMP/scripts/install/envelo-container.sh" --refresh \
+if [[ -f "$TMP_CODE/scripts/install/envelo-container.sh" ]]; then
+  bash "$TMP_CODE/scripts/install/envelo-container.sh" --refresh \
     || echo "Warning: refreshing the container setup failed; Envelo itself is still updated."
 fi
 VERSION="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' /opt/envelo/package.json 2>/dev/null || true)"
@@ -109,7 +175,9 @@ Environment=KEY_FILE=/etc/envelo/secret.key
 Restart=on-failure
 User=envelo
 Group=envelo
+UMask=0077
 AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ProtectSystem=strict
 PrivateTmp=true
@@ -120,13 +188,55 @@ WantedBy=multi-user.target
 EOF
 }
 
+remove_autologin() {
+  if [[ -d /etc/systemd/system/container-getty@1.service.d || -d /etc/systemd/system/console-getty.service.d ]]; then
+    rm -rf /etc/systemd/system/container-getty@1.service.d /etc/systemd/system/console-getty.service.d
+    systemctl daemon-reload
+    systemctl restart container-getty@1.service >/dev/null 2>&1 || true
+    systemctl restart console-getty.service >/dev/null 2>&1 || true
+  fi
+}
+
+# Extra sandboxing in a drop-in, so it can be taken back on containers where
+# a setting is not supported (the service would not start).
+HARDENING=/etc/systemd/system/envelo.service.d/hardening.conf
+install_hardening() {
+  mkdir -p "$(dirname "$HARDENING")"
+  cat > "$HARDENING" <<'CONF'
+[Service]
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CONF
+}
+# Restart with the sandboxing; without it if Envelo does not come up.
+check_hardening() {
+  systemctl cat envelo >/dev/null 2>&1 || return 0
+  systemctl daemon-reload
+  systemctl restart envelo || true
+  for _ in $(seq 1 15); do
+    curl -fsS -o /dev/null "http://127.0.0.1:${PORT}/api/version" 2>/dev/null && return 0
+    sleep 1
+  done
+  echo "Envelo did not start with the extra sandboxing on this container; running without it."
+  rm -f "$HARDENING"
+  systemctl daemon-reload
+  systemctl restart envelo || true
+}
+
 install_console() {
   local port_suffix=""
   [[ "$PORT" == "80" ]] || port_suffix=":$PORT"
 
-  # Log in as root on the container console without a password. The Proxmox
-  # console attaches to tty1 (container-getty@1) or the console device
-  # (console-getty). Anyone who can open it already has root on the host.
+  # Log in as root on the container console without a password (opt-in with
+  # AUTOLOGIN=1). The Proxmox console attaches to tty1 (container-getty@1) or
+  # the console device (console-getty). Anyone allowed to open this
+  # container's console in Proxmox gets root in it.
   rm -rf /etc/systemd/system/container-getty@.service.d   # broken override from 0.1.0-alpha.1
   mkdir -p /etc/systemd/system/container-getty@1.service.d /etc/systemd/system/console-getty.service.d
   cat > /etc/systemd/system/container-getty@1.service.d/override.conf <<'EOF'
@@ -182,10 +292,22 @@ install_cli() {
   cat > /usr/local/bin/envelo <<'CLI'
 #!/usr/bin/env bash
 # Envelo admin commands. Run `envelo` for help.
-set -a
-. /etc/envelo/envelo.env
-set +a
-export DATA_DIR="${DATA_DIR:-/var/lib/envelo}"
+# Settings are read as KEY=VALUE lines, never run as shell code, and only
+# known keys are taken.
+load_env() {
+  local file="$1" line key value
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+    value="${value#\"}"; value="${value%\"}"
+    case "$key" in
+      REPO|REF|PORT|GITHUB_TOKEN|AUTOLOGIN|TRUST_PROXY|REGISTRATION|SECURE_COOKIES|RECEIPT_QUOTA_MB|DATA_DIR) export "$key=$value" ;;
+    esac
+  done < "$file"
+}
+load_env /etc/envelo/envelo.env
+export PORT DATA_DIR="${DATA_DIR:-/var/lib/envelo}"
 exec /usr/bin/node /opt/envelo/server/cli.js "$@"
 CLI
   chmod +x /usr/local/bin/envelo
@@ -220,12 +342,22 @@ install_packages() {
 }
 
 if [[ "$MODE" == "--refresh" ]]; then
+  # Older installs kept the GitHub token in envelo.env and had no
+  # TRUST_PROXY / REGISTRATION: rewrite both files with the current values.
+  had_proxy="$(grep -c '^TRUST_PROXY=' /etc/envelo/envelo.env 2>/dev/null || true)"
+  write_config
+  if [[ "${had_proxy:-0}" == "0" ]]; then
+    echo "Added TRUST_PROXY=1 to /etc/envelo/envelo.env (Envelo behind a reverse proxy). Set it to 0 if browsers reach Envelo directly."
+  fi
   install_packages
   install_update_command
   install_key
   install_cli
   install_service
-  if [[ "$AUTOLOGIN" == "1" ]]; then install_console; fi
+  install_hardening
+  chmod 700 /var/lib/envelo 2>/dev/null || true
+  check_hardening
+  if [[ "$AUTOLOGIN" == "1" ]]; then install_console; else remove_autologin; fi
   echo "Setup refreshed."
   exit 0
 fi
@@ -249,19 +381,8 @@ msg_ok "Node.js $(node --version) installed"
 
 msg_info "Creating the envelo user and config"
 id envelo >/dev/null 2>&1 || useradd --system --home /var/lib/envelo --shell /usr/sbin/nologin envelo
-mkdir -p /var/lib/envelo /etc/envelo
-chown envelo:envelo /var/lib/envelo
-(
-  umask 077
-  cat > /etc/envelo/envelo.env <<EOF
-REPO=$REPO
-REF=$REF
-PORT=$PORT
-GITHUB_TOKEN=$GITHUB_TOKEN
-AUTOLOGIN=$AUTOLOGIN
-EOF
-)
-chmod 600 /etc/envelo/envelo.env
+install -d -m 0700 -o envelo -g envelo /var/lib/envelo
+write_config
 msg_ok "Config written to /etc/envelo/envelo.env"
 
 msg_info "Installing the update command"
@@ -279,8 +400,10 @@ msg_ok "Data is encrypted with /etc/envelo/secret.key; 'envelo' runs admin comma
 
 msg_info "Starting the Envelo service"
 install_service
+install_hardening
 systemctl daemon-reload
-systemctl enable --now envelo
+systemctl enable envelo
+check_hardening
 for _ in $(seq 1 15); do
   curl -fsS -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null && break
   sleep 1

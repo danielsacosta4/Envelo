@@ -8,9 +8,9 @@ const { createApp } = require('../server/server.js');
 const ROOT = path.join(__dirname, '..');
 
 // Start a server on a random port with its own data directory.
-async function start() {
+async function start(options = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'envelo-test-'));
-  const server = createApp({ dataDir, publicDir: ROOT });
+  const server = createApp({ dataDir, publicDir: ROOT, registration: 'open', ...options });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   return {
@@ -433,7 +433,7 @@ test('the data file is encrypted at rest and still loads after a restart', async
   await call('POST', '/api/register', { email: 'enc@example.com', password: 'longenough1' });
   await call('PUT', '/api/budget', sampleBudget());
   const raw = fs.readFileSync(path.join(dataDir, 'db.json'));
-  assert.equal(raw.subarray(0, 4).toString(), 'ENV1');
+  assert.equal(raw.subarray(0, 4).toString(), 'ENV2');
   assert.ok(!raw.includes(Buffer.from('Groceries')));
   assert.ok(!raw.includes(Buffer.from('enc@example.com')));
   await new Promise((r) => { server.closeAllConnections?.(); server.close(r); });
@@ -467,7 +467,12 @@ test('two-step sign-in: setup, sign in with a code or a recovery code, and turn 
   try {
     const a = client(s.base);
     await a('POST', '/api/register', { email: 'tf@example.com', password: 'longenough1' });
-    const setup = await a('POST', '/api/2fa/setup');
+    // A stolen session alone cannot turn on two-step sign-in.
+    assert.equal((await a('POST', '/api/2fa/setup', {})).status, 403);
+    assert.equal((await a('POST', '/api/2fa/setup', { password: 'wrong-one' })).status, 403);
+    const other = client(s.base);
+    await other('POST', '/api/login', { email: 'tf@example.com', password: 'longenough1' });
+    const setup = await a('POST', '/api/2fa/setup', { password: 'longenough1' });
     assert.match(setup.body.uri, /^otpauth:\/\/totp\/Envelo:tf%40example.com\?secret=/);
     assert.equal((await a('POST', '/api/2fa/enable', { code: '000000' })).status, 400);
     const step = Math.floor(Date.now() / 30000);
@@ -475,6 +480,9 @@ test('two-step sign-in: setup, sign in with a code or a recovery code, and turn 
     assert.equal(on.status, 200);
     assert.equal(on.body.recoveryCodes.length, 10);
     assert.equal(on.body.user.twofa, true);
+    // Turning it on signs out every other device.
+    assert.equal((await other('GET', '/api/me')).status, 401);
+    assert.equal((await a('GET', '/api/me')).status, 200);
 
     const b = client(s.base);
     const noCode = await b('POST', '/api/login', { email: 'tf@example.com', password: 'longenough1' });
@@ -491,6 +499,7 @@ test('two-step sign-in: setup, sign in with a code or a recovery code, and turn 
 
     assert.equal((await a('POST', '/api/2fa/disable', { password: 'nope-nope' })).status, 403);
     assert.equal((await a('POST', '/api/2fa/disable', { password: 'longenough1' })).body.user.twofa, false);
+    assert.equal((await b('GET', '/api/me')).status, 401);
     assert.equal((await client(s.base)('POST', '/api/login', { email: 'tf@example.com', password: 'longenough1' })).status, 200);
   } finally {
     await s.close();
@@ -635,4 +644,189 @@ test('a budget with "__proto__" cannot pollute the server or forge a session', a
   } finally {
     await s.close();
   }
+});
+
+test('guessing is limited per account, even with your own successful sign-ins in between', async () => {
+  const s = await start();
+  try {
+    await client(s.base)('POST', '/api/register', { email: 'victim@example.com', password: 'longenough1' });
+    await client(s.base)('POST', '/api/register', { email: 'me@example.com', password: 'longenough1' });
+    const att = client(s.base);
+    let blocked = false;
+    for (let i = 0; i < 12 && !blocked; i++) {
+      const r = await att('POST', '/api/login', { email: 'victim@example.com', password: `guess-${i}` });
+      if (r.status === 429) blocked = true;
+      // The old weakness: a good sign-in to another account reset the counter.
+      assert.equal((await att('POST', '/api/login', { email: 'me@example.com', password: 'longenough1' })).status, 200);
+    }
+    assert.ok(blocked, 'the victim account gets locked');
+    // Even the right password waits now, so guessing cannot continue.
+    assert.equal((await att('POST', '/api/login', { email: 'victim@example.com', password: 'longenough1' })).status, 429);
+    // Other accounts are unaffected.
+    assert.equal((await client(s.base)('POST', '/api/login', { email: 'me@example.com', password: 'longenough1' })).status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test('behind a trusted proxy, limits use the real client address', async () => {
+  const s = await start({ trustProxy: true });
+  try {
+    await client(s.base)('POST', '/api/register', { email: 'p@example.com', password: 'longenough1' });
+    const from = (ip, body) => fetch(`${s.base}/api/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip, 'X-Forwarded-Proto': 'https' }, body: JSON.stringify(body),
+    });
+    // One client hammers made-up accounts until its address is blocked...
+    let status = 0;
+    for (let i = 0; i < 40 && status !== 429; i++) status = (await from('203.0.113.9', { email: `x${i}@example.com`, password: 'wrongwrong' })).status;
+    assert.equal(status, 429);
+    // ...while everyone else behind the same proxy can still sign in.
+    const ok = await from('198.51.100.7', { email: 'p@example.com', password: 'longenough1' });
+    assert.equal(ok.status, 200);
+    assert.match(ok.headers.get('set-cookie'), /; Secure/);
+    assert.match(ok.headers.get('strict-transport-security'), /max-age=/);
+  } finally {
+    await s.close();
+  }
+});
+
+test('invite-only sign-up: the first account, then only invited emails', async () => {
+  const s = await start({ registration: 'invite' });
+  try {
+    const owner = client(s.base);
+    assert.equal((await owner('POST', '/api/register', { email: 'owner@example.com', password: 'longenough1' })).status, 201);
+    const stranger = await client(s.base)('POST', '/api/register', { email: 'stranger@example.com', password: 'longenough1' });
+    assert.equal(stranger.status, 403);
+    assert.equal((await client(s.base)('GET', '/api/registration')).body.mode, 'invite');
+    assert.equal((await owner('POST', '/api/invites', { email: 'Friend@Example.com' })).status, 200);
+    assert.deepEqual((await owner('GET', '/api/invites')).body.invites, ['friend@example.com']);
+    assert.equal((await client(s.base)('POST', '/api/register', { email: 'friend@example.com', password: 'longenough1' })).status, 201);
+    // Used up.
+    assert.deepEqual((await owner('GET', '/api/invites')).body.invites, []);
+    // Sharing invites too, without saying whether the email has an account.
+    await owner('PUT', '/api/budget', sampleBudget());
+    const sh = await owner('POST', '/api/shares', { member: 'partner@example.com', envelopeIds: ['e1'] });
+    assert.equal(sh.body.registered, undefined);
+    assert.equal((await client(s.base)('POST', '/api/register', { email: 'partner@example.com', password: 'longenough1' })).status, 201);
+    // The admin can close sign-up entirely.
+    const token = fs.readFileSync(path.join(s.dataDir, 'admin.token'), 'utf8');
+    const admin = (cmd, body) => fetch(`${s.base}/api/admin/${cmd}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Token': token }, body: JSON.stringify(body) });
+    assert.equal((await admin('invite', { email: 'late@example.com' })).status, 200);
+    assert.equal((await admin('registration', { mode: 'closed' })).status, 200);
+    assert.equal((await client(s.base)('POST', '/api/register', { email: 'late@example.com', password: 'longenough1' })).status, 403);
+  } finally {
+    await s.close();
+  }
+});
+
+test('requests from other sites are refused; sign out everywhere ends other sessions and streams', async () => {
+  const s = await start();
+  try {
+    const a = client(s.base);
+    await a('POST', '/api/register', { email: 'cs@example.com', password: 'longenough1' });
+    const evil = await fetch(`${s.base}/api/budget`, {
+      method: 'PUT', headers: { Cookie: a.cookie(), 'Content-Type': 'application/json', Origin: 'https://evil.example' }, body: JSON.stringify(sampleBudget()),
+    });
+    assert.equal(evil.status, 403);
+    const sneaky = await fetch(`${s.base}/api/budget`, {
+      method: 'PUT', headers: { Cookie: a.cookie(), 'Content-Type': 'text/plain; x=application/json' }, body: JSON.stringify(sampleBudget()),
+    });
+    assert.equal(sneaky.status, 415);
+    const crossSite = await fetch(`${s.base}/api/budget`, {
+      method: 'PUT', headers: { Cookie: a.cookie(), 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-site', Origin: 'https://other.example' }, body: JSON.stringify(sampleBudget()),
+    });
+    assert.equal(crossSite.status, 403);
+    // A proxy that rewrites Host does not break the app's own requests.
+    const viaProxy = await fetch(`${s.base}/api/budget`, {
+      method: 'PUT', headers: { Cookie: a.cookie(), 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', Origin: 'https://envelo.example' }, body: JSON.stringify(sampleBudget()),
+    });
+    assert.equal(viaProxy.status, 200);
+    const own = await fetch(`${s.base}/api/budget`, {
+      method: 'PUT', headers: { Cookie: a.cookie(), 'Content-Type': 'application/json', Origin: s.base }, body: JSON.stringify(sampleBudget()),
+    });
+    assert.equal(own.status, 200);
+
+    const b = client(s.base);
+    await b('POST', '/api/login', { email: 'cs@example.com', password: 'longenough1' });
+    const stream = await fetch(`${s.base}/api/events`, { headers: { Cookie: b.cookie() } });
+    const reader = stream.body.getReader();
+    await reader.read();
+    assert.equal((await a('POST', '/api/sessions/revoke', {})).status, 200);
+    assert.equal((await b('GET', '/api/me')).status, 401);
+    assert.equal((await a('GET', '/api/me')).status, 200);
+    // b's live stream is closed with its session.
+    let done = false;
+    for (let i = 0; i < 5 && !done; i++) ({ done } = await reader.read());
+    assert.equal(done, true);
+    const out = await a('POST', '/api/logout');
+    assert.equal(out.headers.get('clear-site-data'), '"cache"');
+  } finally {
+    await s.close();
+  }
+});
+
+test('accounts from before this update still sign in, and get the stronger hash', async () => {
+  const crypto = require('node:crypto');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'envelo-test-'));
+  const salt = 'abcd';
+  // How passwords were stored until now: scryptSync with its default cost.
+  const hash = crypto.scryptSync('old-password', salt, 64).toString('hex');
+  fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({ users: { 'old@example.com': { email: 'old@example.com', salt, hash } }, budgets: {}, sessions: {} }));
+  const server = createApp({ dataDir, publicDir: ROOT });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    assert.equal((await client(base)('POST', '/api/login', { email: 'old@example.com', password: 'old-password' })).status, 200);
+    assert.equal((await client(base)('POST', '/api/login', { email: 'old@example.com', password: 'old-password' })).status, 200);
+    assert.equal((await client(base)('POST', '/api/login', { email: 'old@example.com', password: 'wrong-password' })).status, 401);
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('attachments have a quota per person, and unused old files are removed', async () => {
+  const s = await start({ receiptQuotaMb: 1 });
+  try {
+    const a = client(s.base);
+    await a('POST', '/api/register', { email: 'q@example.com', password: 'longenough1' });
+    const up = (size) => fetch(`${s.base}/api/receipts`, { method: 'POST', headers: { Cookie: a.cookie(), 'Content-Type': 'image/jpeg' }, body: Buffer.alloc(size, 1) });
+    const first = await up(700 * 1024);
+    assert.equal(first.status, 201);
+    const { id } = await first.json();
+    const second = await up(700 * 1024);
+    assert.equal(second.status, 413);
+    // Make the unused file look old, then save a budget that does not use it.
+    const dir = fs.readdirSync(path.join(s.dataDir, 'receipts'))[0];
+    const file = path.join(s.dataDir, 'receipts', dir, `${id}.bin`);
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(file, old, old);
+    assert.equal((await a('PUT', '/api/budget', sampleBudget())).status, 200);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(fs.existsSync(file), false);
+    assert.equal((await up(700 * 1024)).status, 201);
+  } finally {
+    await s.close();
+  }
+});
+
+test('encrypted files are bound to what they are; plain text is refused once encrypted', async () => {
+  const store = require('../server/secure-store.js');
+  const crypto = require('node:crypto');
+  const key = crypto.randomBytes(32);
+  const a = store.encrypt(key, Buffer.from('receipt A'), 'envelo:receipt:u1:1');
+  assert.equal(store.decrypt(key, a, { context: 'envelo:receipt:u1:1' }).toString(), 'receipt A');
+  // Moved into another user's folder: the context no longer matches.
+  assert.throws(() => store.decrypt(key, a, { context: 'envelo:receipt:u2:1' }));
+  // Files from before the context still read.
+  const old = store.encrypt(key, Buffer.from('old'));
+  assert.equal(store.decrypt(key, old, { context: 'anything' }).toString(), 'old');
+  assert.throws(() => store.decrypt(key, Buffer.from('{"plain":true}'), { allowPlain: false }), /not encrypted/);
+
+  // The server: after an encrypted save, a plain db.json dropped in is refused.
+  const s = await start();
+  await client(s.base)('POST', '/api/register', { email: 'm@example.com', password: 'longenough1' });
+  await s.close();
+  fs.writeFileSync(path.join(s.dataDir, 'db.json'), JSON.stringify({ users: {}, budgets: {}, sessions: {} }));
+  assert.throws(() => createApp({ dataDir: s.dataDir, publicDir: ROOT }), /not encrypted/);
 });

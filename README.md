@@ -112,7 +112,10 @@ Environment variables:
 | `PORT`           | `3000`         | Port to listen on                                    |
 | `HOST`           | `0.0.0.0`      | Interface to bind to                                 |
 | `DATA_DIR`       | `./data`       | Where accounts and budgets are stored                |
-| `SECURE_COOKIES` | unset          | Set to `1` when serving over HTTPS (adds `Secure`)   |
+| `SECURE_COOKIES` | unset          | Set to `1` to always add `Secure` to the session cookie |
+| `TRUST_PROXY`    | unset (`1` in the installers) | Behind a reverse proxy: take client addresses and HTTPS from `X-Forwarded-For` / `X-Forwarded-Proto` (secure cookies and HSTS then follow automatically). Leave unset when browsers reach Envelo directly |
+| `REGISTRATION`   | `invite`       | Who may create an account after the first one: `open`, `invite` or `closed` |
+| `RECEIPT_QUOTA_MB` | `200`        | Space for photos and PDFs per person                 |
 | `KEY_FILE`       | `DATA_DIR/secret.key` | Encryption key for the data (the installers use `/etc/envelo/secret.key`) |
 
 To install on a Proxmox VE host in a new container, run this on the host as root:
@@ -168,9 +171,24 @@ REF=some-branch HOSTNAME_CT=envelo-test bash -c "$(curl -fsSL https://raw.github
 
 - Serve Envelo over **HTTPS** before using it outside your home network. The
   server speaks plain HTTP. Put a reverse proxy with a certificate in front and
-  set `SECURE_COOKIES=1`.
-- API writes must be `application/json`, which blocks simple cross-site form
-  attacks.
+  set `TRUST_PROXY=1` (the installers do).
+- **Sign-up is invite-only** after the first account. Invite people in
+  Settings, by sharing envelopes with them, or with `envelo invite <email>`;
+  `envelo registration open|invite|closed` changes the mode.
+- **Sign-in limits** apply per account and per client address, also to
+  two-step codes and to password checks inside the app.
+- **Two-step sign-in** changes need the password and sign out other devices.
+  Settings has "Sign out everywhere else".
+- **Requests from other sites** are refused: writes must be `application/json`
+  and come from Envelo's own pages (`Origin` check).
+- **Every budget** the server receives, and every backup or shared budget the
+  app opens, is checked for unsafe data before it is used.
+- **Data at rest** is encrypted with AES-256-GCM; each file is bound to what it
+  is, so encrypted files cannot be swapped between people. Back up
+  `/etc/envelo/secret.key` separately: without it the data cannot be read.
+- `update` installs the newest code of the branch in `REF`, so only trust a
+  repository you control. Settings are read as plain values (never run), and a
+  GitHub token for a private repository is only visible to root.
 
 ## Test
 

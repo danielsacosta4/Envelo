@@ -37,6 +37,13 @@ const BACKUPS_KEPT = 14;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const HEARTBEAT_MS = 25 * 1000;
 const SHARE_ROLES = ['view', 'edit'];
+const MAX_MEMBER_CENTS = 1e10; // 100 million: anything above is a typo or an attack
+// A calendar date that exists (not 2026-02-31).
+function realDate(v) {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+}
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -64,12 +71,26 @@ class HttpError extends Error {
 
 const sha256 = (text) => crypto.createHash('sha256').update(text).digest('hex');
 
-function hashPassword(password, salt) {
-  return crypto.scryptSync(password, salt, 64).toString('hex');
+// Passwords: scrypt, run off the main thread so a login never stalls other
+// requests. New hashes use a higher cost; older ones (no `kdf` on the user)
+// are checked with the old cost and upgraded at the next sign-in.
+const KDF = { N: 2 ** 16, r: 8, p: 1 };
+const LEGACY_KDF = { N: 2 ** 14, r: 8, p: 1 };
+function scryptHex(password, salt, kdf) {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, { ...kdf, maxmem: 256 * 1024 * 1024 }, (err, buf) => (err ? reject(err) : resolve(buf.toString('hex'))));
+  });
 }
-
-function checkPassword(password, user) {
-  const actual = Buffer.from(hashPassword(password, user.salt), 'hex');
+function hashPassword(password, salt) {
+  return scryptHex(password, salt, KDF);
+}
+async function checkPassword(password, user) {
+  // Overlong input is never a valid password; still spend the time.
+  if (typeof password !== 'string' || password.length > 200 || !user) {
+    await scryptHex('not-a-password', 'envelo-dummy-salt', KDF);
+    return false;
+  }
+  const actual = Buffer.from(await scryptHex(password, user.salt, user.kdf || LEGACY_KDF), 'hex');
   const expected = Buffer.from(user.hash, 'hex');
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
@@ -103,8 +124,17 @@ function parseCookies(header) {
   return out;
 }
 
-function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
-  fs.mkdirSync(dataDir, { recursive: true });
+//   trustProxy: requests come through a reverse proxy on this machine; take
+//     the client address from X-Forwarded-For and HTTPS from X-Forwarded-Proto
+//   registration: 'open' | 'invite' | 'closed' (the first account can always register)
+function createApp({ dataDir, publicDir, secureCookies = false, keyFile, trustProxy = false, registration = 'invite', receiptQuotaMb = 200 }) {
+  fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  // Leftovers from an import that crashed half way (they can hold a budget).
+  fs.rmSync(path.join(dataDir, 'tmp'), { recursive: true, force: true });
+  // Written once the data has been saved encrypted. From then on a plain-text
+  // db.json is refused: it would mean someone put it there.
+  const encryptedMark = path.join(dataDir, '.encrypted');
+  let encryptedMarked = fs.existsSync(encryptedMark);
   const dbFile = path.join(dataDir, 'db.json');
   // The encryption key lives outside the data folder when the installer set
   // one up; otherwise it is created next to the data.
@@ -114,8 +144,9 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
   if (fs.existsSync(dbFile)) {
     let text;
     try {
-      text = store.decrypt(key, fs.readFileSync(dbFile)).toString('utf8');
-    } catch {
+      text = store.decrypt(key, fs.readFileSync(dbFile), { context: 'envelo:db', allowPlain: !fs.existsSync(encryptedMark) }).toString('utf8');
+    } catch (err) {
+      if (/not encrypted/.test(err.message)) throw new Error(`${dbFile} is not encrypted, but this Envelo has saved encrypted data before. Restore it from a backup in ${path.join(dataDir, 'backups')}.`);
       throw new Error(`Cannot decrypt ${dbFile}: the encryption key does not match. Check KEY_FILE (${keyFile || localKey}).`);
     }
     db = JSON.parse(text);
@@ -128,12 +159,69 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
   // this token, which only root and the service can read.
   const adminToken = crypto.randomBytes(24).toString('hex');
   try {
-    fs.writeFileSync(path.join(dataDir, 'admin.token'), adminToken, { mode: 0o600 });
+    const tokenFile = path.join(dataDir, 'admin.token');
+    fs.writeFileSync(tokenFile, adminToken, { mode: 0o600 });
+    fs.chmodSync(tokenFile, 0o600); // the mode above only applies to a new file
   } catch (err) {
     console.error('Could not write the admin token:', err.message);
   }
   if (!Array.isArray(db.shares)) db.shares = [];
-  const failures = new Map(); // ip -> { count, since }
+  if (!Array.isArray(db.invites)) db.invites = [];
+  if (!['open', 'invite', 'closed'].includes(db.registration)) db.registration = registration;
+
+  // Failed sign-ins and password checks, counted per client address and per
+  // account. A success clears only that account's count, so signing in to an
+  // account of your own never resets the count for guesses at someone else's.
+  const attempts = new Map(); // 'ip:…' or 'acct:…' -> { count, since }
+  const LIMIT = { ip: 30, acct: 6 };
+  const MAX_TRACKED = 20000;
+  function clientIp(req) {
+    if (trustProxy) {
+      const hops = String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean);
+      if (hops.length) return hops[hops.length - 1];
+    }
+    return req.socket.remoteAddress || 'unknown';
+  }
+  function isHttps(req) {
+    return !!req.socket.encrypted || (trustProxy && String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https');
+  }
+  function limitKeys(req, email) {
+    const keys = [`ip:${clientIp(req)}`];
+    if (email) keys.push(`acct:${email}`);
+    return keys;
+  }
+  function checkLimit(keys) {
+    const now = Date.now();
+    for (const k of keys) {
+      const e = attempts.get(k);
+      if (!e) continue;
+      if (now - e.since > LOGIN_WINDOW_MS) attempts.delete(k);
+      else if (e.count >= LIMIT[k.slice(0, k.indexOf(':'))]) {
+        throw new HttpError(429, 'Too many attempts. Wait 15 minutes and try again.');
+      }
+    }
+  }
+  function recordFailure(keys) {
+    const now = Date.now();
+    for (const k of keys) {
+      const e = attempts.get(k);
+      if (!e || now - e.since > LOGIN_WINDOW_MS) {
+        attempts.delete(k);
+        attempts.set(k, { count: 1, since: now });
+      } else e.count += 1;
+    }
+    while (attempts.size > MAX_TRACKED) attempts.delete(attempts.keys().next().value);
+  }
+  // A password check on a signed-in request (change password, delete
+  // account, two-step changes): limited like sign-in.
+  async function confirmPassword(req, user, password, message = 'Your password is not right.') {
+    const keys = limitKeys(req, user.email);
+    checkLimit(keys);
+    if (!(await checkPassword(String(password || ''), user))) {
+      recordFailure(keys);
+      throw new HttpError(403, message);
+    }
+  }
 
   // Live updates: every open tab keeps an event stream; a save is announced
   // to the owner's other tabs and to everyone the budget is shared with.
@@ -209,8 +297,12 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
       if (s.expires < now) delete db.sessions[key];
     }
     const tmp = `${dbFile}.tmp`;
-    fs.writeFileSync(tmp, store.encrypt(key, Buffer.from(JSON.stringify(db))), { mode: 0o600 });
+    fs.writeFileSync(tmp, store.encrypt(key, Buffer.from(JSON.stringify(db)), 'envelo:db'), { mode: 0o600 });
     fs.renameSync(tmp, dbFile);
+    if (!encryptedMarked) {
+      try { fs.writeFileSync(encryptedMark, '', { mode: 0o600 }); } catch { /* read-only data dir */ }
+      encryptedMarked = true;
+    }
     backupDaily();
   }
 
@@ -246,12 +338,13 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
     res.end(data);
   }
 
-  function sessionCookie(token, maxAgeSeconds) {
-    return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secureCookies ? '; Secure' : ''}`;
+  function sessionCookie(token, maxAgeSeconds, req) {
+    const secure = secureCookies || (req && isHttps(req));
+    return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure ? '; Secure' : ''}`;
   }
 
   function readJson(req) {
-    if (!String(req.headers['content-type'] || '').includes('application/json')) {
+    if (String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase() !== 'application/json') {
       throw new HttpError(415, 'Send JSON.');
     }
     return new Promise((resolve, reject) => {
@@ -322,6 +415,11 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
     for (const [k, sess] of Object.entries(db.sessions)) {
       if (sess.email === email && k !== exceptKey) delete db.sessions[k];
     }
+    closeStreams(email, (res) => res.sessionKey !== exceptKey);
+  }
+  // Live-update streams belong to a session and end with it.
+  function closeStreams(email, which = () => true) {
+    for (const res of [...(streams.get(email) || [])]) if (which(res)) res.end();
   }
 
   function validPassword(password) {
@@ -330,10 +428,11 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
     }
   }
 
-  function setPassword(user, password) {
+  async function setPassword(user, password) {
     validPassword(password);
     user.salt = crypto.randomBytes(16).toString('hex');
-    user.hash = hashPassword(password, user.salt);
+    user.hash = await hashPassword(password, user.salt);
+    user.kdf = { ...KDF };
     delete user.mustChangePassword;
   }
 
@@ -343,7 +442,8 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
       const c = crypto.randomBytes(5).toString('hex').toUpperCase();
       codes.push(`${c.slice(0, 5)}-${c.slice(5)}`);
     }
-    user.recovery = codes.map((c) => sha256(c));
+    user.recoverySalt = crypto.randomBytes(16).toString('hex');
+    user.recovery = codes.map((c) => sha256(`${user.recoverySalt}:${c}`));
     return codes;
   }
 
@@ -355,7 +455,9 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
       user.totpLastStep = step;
       return true;
     }
-    const hashed = sha256(clean.replace(/\s/g, ''));
+    const typed = clean.replace(/\s/g, '');
+    // Codes from before salting are unsalted hashes.
+    const hashed = user.recoverySalt ? sha256(`${user.recoverySalt}:${typed}`) : sha256(typed);
     const i = (user.recovery || []).indexOf(hashed);
     if (i >= 0) {
       user.recovery.splice(i, 1);
@@ -367,6 +469,33 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
   function receiptDir(email) {
     return path.join(receiptsDir, sha256(email).slice(0, 32));
   }
+  function receiptBytes(email) {
+    let total = 0;
+    try {
+      for (const f of fs.readdirSync(receiptDir(email))) total += fs.statSync(path.join(receiptDir(email), f)).size;
+    } catch { /* no folder yet */ }
+    return total;
+  }
+  // Attachment files that no transaction or scheduled transaction uses any
+  // more are deleted once they are a week old (a fresh upload is not yet
+  // saved in the budget, and undo may bring a transaction back).
+  const RECEIPT_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+  function cleanReceipts(email, budget) {
+    const used = new Set();
+    for (const t of budget.transactions || []) if (t && t.receiptId) used.add(t.receiptId);
+    for (const r of budget.recurring || []) if (r && r.receiptId) used.add(r.receiptId);
+    const dir = receiptDir(email);
+    let files = [];
+    try { files = fs.readdirSync(dir); } catch { return; }
+    const now = Date.now();
+    for (const f of files) {
+      const id = f.replace(/\.bin$/, '');
+      if (used.has(id)) continue;
+      try {
+        if (now - fs.statSync(path.join(dir, f)).mtimeMs > RECEIPT_GRACE_MS) fs.rmSync(path.join(dir, f), { force: true });
+      } catch { /* gone already */ }
+    }
+  }
 
   function removeUser(email) {
     delete db.users[email];
@@ -376,29 +505,16 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
     fs.rmSync(receiptDir(email), { recursive: true, force: true });
   }
 
-  function startSession(res, email) {
+  function addInvite(email, by) {
+    if (db.users[email] || db.invites.some((i) => i.email === email)) return;
+    db.invites.push({ email, by, at: new Date().toISOString() });
+    if (db.invites.length > 1000) db.invites.shift();
+  }
+
+  function startSession(req, email) {
     const token = crypto.randomBytes(32).toString('base64url');
     db.sessions[sha256(token)] = { email, expires: Date.now() + SESSION_MS };
-    return sessionCookie(token, SESSION_MS / 1000);
-  }
-
-  function rateLimited(ip) {
-    const entry = failures.get(ip);
-    if (!entry) return false;
-    if (Date.now() - entry.since > LOGIN_WINDOW_MS) {
-      failures.delete(ip);
-      return false;
-    }
-    return entry.count >= LOGIN_MAX_FAILURES;
-  }
-
-  function recordFailure(ip) {
-    const entry = failures.get(ip);
-    if (!entry || Date.now() - entry.since > LOGIN_WINDOW_MS) {
-      failures.set(ip, { count: 1, since: Date.now() });
-    } else {
-      entry.count += 1;
-    }
+    return sessionCookie(token, SESSION_MS / 1000, req);
   }
 
   function credentials(body) {
@@ -410,51 +526,67 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
 
   async function api(req, res, pathname) {
     if (req.method === 'POST' && pathname === '/api/register') {
+      // Every attempt counts against the address, so accounts cannot be
+      // created (or probed) in bulk.
+      const ipKeys = limitKeys(req);
+      checkLimit(ipKeys);
+      recordFailure(ipKeys);
       const { email, password } = credentials(await readJson(req));
       if (password.length < 8 || password.length > 200) {
         throw new HttpError(400, 'Password must be 8 to 200 characters.');
       }
-      if (db.users[email]) throw new HttpError(409, 'An account with this email already exists.');
+      const first = Object.keys(db.users).length === 0;
+      const invited = db.invites.some((i) => i.email === email);
+      if (!first && db.registration === 'closed') throw new HttpError(403, 'New accounts are switched off on this Envelo.');
+      if (!first && db.registration === 'invite' && !invited) {
+        throw new HttpError(403, 'Ask the owner of this Envelo to invite this email first.');
+      }
+      if (db.users[email]) throw new HttpError(409, 'This email cannot be used. If it is yours, sign in instead.');
       const salt = crypto.randomBytes(16).toString('hex');
-      db.users[email] = { email, salt, hash: hashPassword(password, salt), createdAt: new Date().toISOString() };
-      const cookie = startSession(res, email);
+      db.users[email] = { email, salt, hash: await hashPassword(password, salt), kdf: { ...KDF }, createdAt: new Date().toISOString() };
+      db.invites = db.invites.filter((i) => i.email !== email);
+      const cookie = startSession(req, email);
       persist();
       return sendJson(res, 201, { user: userOut(db.users[email]) }, { 'Set-Cookie': cookie });
     }
 
+    if (req.method === 'GET' && pathname === '/api/registration') {
+      return sendJson(res, 200, { mode: Object.keys(db.users).length === 0 ? 'open' : db.registration });
+    }
+
     if (req.method === 'POST' && pathname === '/api/login') {
-      const ip = req.socket.remoteAddress || 'unknown';
-      if (rateLimited(ip)) throw new HttpError(429, 'Too many attempts. Try again in a few minutes.');
       const body = await readJson(req);
-      req.body = body;
       const { email, password } = credentials(body);
+      const keys = limitKeys(req, email);
+      checkLimit(keys);
       const user = db.users[email];
       // Always hash, so unknown emails take as long as wrong passwords.
-      const ok = user
-        ? checkPassword(password, user)
-        : (hashPassword(password, 'envelo-dummy-salt'), false);
-      if (!ok) {
-        recordFailure(ip);
+      if (!(await checkPassword(password, user))) {
+        recordFailure(keys);
         throw new HttpError(401, 'Email or password is wrong.');
+      }
+      // After an admin reset, a new password must be chosen before going on.
+      // Asked before the code, so the code is not used up by this round trip.
+      if (user.mustChangePassword && !body.newPassword) {
+        return sendJson(res, 403, { error: 'Choose a new password.', needNewPassword: true, needCode: !!user.totp && !body.code });
       }
       // Two-step sign-in: the password was right, now the code is needed.
       if (user.totp) {
-        const body = req.body || {};
         if (!body.code) return sendJson(res, 401, { error: 'Enter the code from your authenticator app.', needCode: true });
         if (!checkSecondFactor(user, body.code)) {
-          recordFailure(ip);
+          recordFailure(keys);
           persist();
           return sendJson(res, 401, { error: 'That code is not right. Try the newest one.', needCode: true });
         }
       }
-      // After an admin reset, a new password must be chosen before going on.
-      if (user.mustChangePassword) {
-        const body = req.body || {};
-        if (!body.newPassword) return sendJson(res, 403, { error: 'Choose a new password.', needNewPassword: true });
-        setPassword(user, body.newPassword);
+      if (user.mustChangePassword) await setPassword(user, body.newPassword);
+      else if (!user.kdf) {
+        // Upgrade an older, cheaper hash now that the password is known.
+        user.hash = await hashPassword(password, user.salt);
+        user.kdf = { ...KDF };
       }
-      failures.delete(ip);
-      const cookie = startSession(res, email);
+      attempts.delete(`acct:${email}`);
+      const cookie = startSession(req, email);
       persist();
       return sendJson(res, 200, { user: userOut(user) }, { 'Set-Cookie': cookie });
     }
@@ -462,10 +594,21 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
     if (req.method === 'POST' && pathname === '/api/logout') {
       const token = parseCookies(req.headers.cookie)[COOKIE];
       if (token) {
-        delete db.sessions[sha256(token)];
+        const key = sha256(token);
+        const sess = db.sessions[key];
+        delete db.sessions[key];
+        if (sess) closeStreams(sess.email, (r) => r.sessionKey === key);
         persist();
       }
-      return sendJson(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie('', 0) });
+      // The browser also drops anything it cached for this site.
+      return sendJson(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie('', 0, req), 'Clear-Site-Data': '"cache"' });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/sessions/revoke') {
+      const user = requireUser(req);
+      endSessions(user.email, currentToken(req));
+      persist();
+      return sendJson(res, 200, { ok: true });
     }
 
     if (req.method === 'GET' && pathname === '/api/version') {
@@ -510,14 +653,15 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
       db.budgets[user.email] = { budget, savedAt, revision };
       persist();
       announceBudget(user.email, revision, req.headers['x-client-id']);
+      setImmediate(() => cleanReceipts(user.email, budget));
       return sendJson(res, 200, { savedAt, revision });
     }
 
     if (req.method === 'POST' && pathname === '/api/password') {
       const user = requireUser(req);
       const body = await readJson(req);
-      if (!checkPassword(String(body?.current || ''), user)) throw new HttpError(403, 'Your current password is not right.');
-      setPassword(user, body?.next);
+      await confirmPassword(req, user, body?.current, 'Your current password is not right.');
+      await setPassword(user, body?.next);
       // Other devices must sign in again with the new password.
       endSessions(user.email, currentToken(req));
       persist();
@@ -527,15 +671,18 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
     if (req.method === 'POST' && pathname === '/api/account/delete') {
       const user = requireUser(req);
       const body = await readJson(req);
-      if (!checkPassword(String(body?.password || ''), user)) throw new HttpError(403, 'Your password is not right.');
+      await confirmPassword(req, user, body?.password);
       removeUser(user.email);
       persist();
-      return sendJson(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie('', 0) });
+      return sendJson(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie('', 0, req), 'Clear-Site-Data': '"cache"' });
     }
 
     if (req.method === 'POST' && pathname === '/api/2fa/setup') {
       const user = requireUser(req);
+      const body = await readJson(req);
       if (user.totp) throw new HttpError(409, 'Two-step sign-in is already on.');
+      // A stolen session alone must not be enough to change how you sign in.
+      await confirmPassword(req, user, body?.password);
       user.totpPending = totp.newSecret();
       persist();
       return sendJson(res, 200, { secret: user.totpPending, uri: totp.otpauthUri(user.totpPending, user.email) });
@@ -551,6 +698,8 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
       user.totpLastStep = step;
       delete user.totpPending;
       const codes = newRecoveryCodes(user);
+      // Anyone else signed in must now go through the second step too.
+      endSessions(user.email, currentToken(req));
       persist();
       return sendJson(res, 200, { recoveryCodes: codes, user: userOut(user) });
     }
@@ -558,10 +707,12 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
     if (req.method === 'POST' && pathname === '/api/2fa/disable') {
       const user = requireUser(req);
       const body = await readJson(req);
-      if (!checkPassword(String(body?.password || ''), user)) throw new HttpError(403, 'Your password is not right.');
+      await confirmPassword(req, user, body?.password);
       delete user.totp;
       delete user.totpLastStep;
       delete user.recovery;
+      delete user.recoverySalt;
+      endSessions(user.email, currentToken(req));
       persist();
       return sendJson(res, 200, { user: userOut(user) });
     }
@@ -570,7 +721,7 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
       const user = requireUser(req);
       const body = await readJson(req);
       if (!user.totp) throw new HttpError(400, 'Two-step sign-in is off.');
-      if (!checkPassword(String(body?.password || ''), user)) throw new HttpError(403, 'Your password is not right.');
+      await confirmPassword(req, user, body?.password);
       const codes = newRecoveryCodes(user);
       persist();
       return sendJson(res, 200, { recoveryCodes: codes, user: userOut(user) });
@@ -585,11 +736,14 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
       const bytes = await readRaw(req, isPdf ? MAX_PDF_BYTES : MAX_RECEIPT_BYTES);
       if (!bytes.length) throw new HttpError(400, 'The file is empty.');
       if (isPdf && bytes.subarray(0, 5).toString('latin1') !== '%PDF-') throw new HttpError(415, 'That file is not a PDF.');
+      if (receiptBytes(user.email) + bytes.length > receiptQuotaMb * 1024 * 1024) {
+        throw new HttpError(413, `Your attachments use all the space allowed (${receiptQuotaMb} MB). Remove some old ones first.`);
+      }
       const id = crypto.randomUUID();
       const dir = receiptDir(user.email);
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       const payload = Buffer.concat([Buffer.from(`${type}\n`), bytes]);
-      fs.writeFileSync(path.join(dir, `${id}.bin`), store.encrypt(key, payload), { mode: 0o600 });
+      fs.writeFileSync(path.join(dir, `${id}.bin`), store.encrypt(key, payload, `envelo:receipt:${path.basename(dir)}:${id}`), { mode: 0o600 });
       return sendJson(res, 201, { id });
     }
 
@@ -603,7 +757,7 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
         return sendJson(res, 200, { ok: true });
       }
       if (req.method === 'GET') {
-        const plain = store.decrypt(key, fs.readFileSync(file));
+        const plain = store.decrypt(key, fs.readFileSync(file), { context: `envelo:receipt:${path.basename(path.dirname(file))}:${receiptMatch[1]}` });
         const nl = plain.indexOf(10);
         const type = plain.subarray(0, nl).toString('utf8');
         const body = plain.subarray(nl + 1);
@@ -627,20 +781,38 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
     // Admin commands from the `envelo` tool on the server itself.
     if (req.method === 'POST' && pathname.startsWith('/api/admin/')) {
       const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
-      const given = String(req.headers['x-admin-token'] || '');
-      if (!local || given.length !== adminToken.length || !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(adminToken))) {
+      const given = Buffer.from(String(req.headers['x-admin-token'] || ''));
+      const want = Buffer.from(adminToken);
+      if (!local || given.length !== want.length || !crypto.timingSafeEqual(given, want)) {
         throw new HttpError(403, 'Not allowed.');
       }
       const body = await readJson(req);
       if (pathname === '/api/admin/users') {
-        return sendJson(res, 200, { users: Object.values(db.users).map((u) => ({ email: u.email, createdAt: u.createdAt, twofa: !!u.totp })) });
+        return sendJson(res, 200, {
+          users: Object.values(db.users).map((u) => ({ email: u.email, createdAt: u.createdAt, twofa: !!u.totp })),
+          invites: db.invites.map((i) => i.email), registration: db.registration,
+        });
+      }
+      if (pathname === '/api/admin/registration') {
+        const mode = String(body?.mode || '');
+        if (!['open', 'invite', 'closed'].includes(mode)) throw new HttpError(400, 'Use open, invite or closed.');
+        db.registration = mode;
+        persist();
+        return sendJson(res, 200, { registration: mode });
+      }
+      if (pathname === '/api/admin/invite') {
+        const email = String(body?.email || '').trim().toLowerCase();
+        if (!EMAIL_RE.test(email) || email.length > 254) throw new HttpError(400, 'Give an email address.');
+        addInvite(email, 'admin');
+        persist();
+        return sendJson(res, 200, { email });
       }
       const email = String(body?.email || '').trim().toLowerCase();
       const user = db.users[email];
       if (!user) throw new HttpError(404, `No account for ${email}.`);
       if (pathname === '/api/admin/reset-password') {
         const temp = crypto.randomBytes(9).toString('base64url');
-        setPassword(user, temp);
+        await setPassword(user, temp);
         user.mustChangePassword = true;
         endSessions(email);
         persist();
@@ -650,6 +822,7 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
         delete user.totp;
         delete user.totpLastStep;
         delete user.recovery;
+        delete user.recoverySalt;
         delete user.totpPending;
         persist();
         return sendJson(res, 200, { email });
@@ -664,6 +837,11 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
 
     if (req.method === 'GET' && pathname === '/api/events') {
       const user = requireUser(req);
+      const mine = streams.get(user.email);
+      let total = 0;
+      for (const set of streams.values()) total += set.size;
+      if ((mine && mine.size >= 8) || total >= 1000) throw new HttpError(429, 'Too many open windows.');
+      res.sessionKey = currentToken(req);
       res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-store',
@@ -682,6 +860,29 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
         }
       });
       return undefined;
+    }
+
+    // Invites: who may create an account while sign-up is invite-only.
+    if (req.method === 'GET' && pathname === '/api/invites') {
+      const user = requireUser(req);
+      return sendJson(res, 200, { mode: db.registration, invites: db.invites.filter((i) => i.by === user.email).map((i) => i.email) });
+    }
+    if (req.method === 'POST' && pathname === '/api/invites') {
+      const user = requireUser(req);
+      const body = await readJson(req);
+      const email = String(body?.email || '').trim().toLowerCase();
+      if (!EMAIL_RE.test(email) || email.length > 254) throw new HttpError(400, 'Enter an email address.');
+      addInvite(email, user.email);
+      persist();
+      return sendJson(res, 200, { email });
+    }
+    const inviteMatch = pathname.match(/^\/api\/invites\/(.+)$/);
+    if (inviteMatch && req.method === 'DELETE') {
+      const user = requireUser(req);
+      const email = decodeURIComponent(inviteMatch[1]).toLowerCase();
+      db.invites = db.invites.filter((i) => !(i.email === email && i.by === user.email));
+      persist();
+      return sendJson(res, 200, { ok: true });
     }
 
     if (req.method === 'GET' && pathname === '/api/shares') {
@@ -710,9 +911,12 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
         sh = { id: crypto.randomUUID(), owner: user.email, member, role, envelopeIds, createdAt: new Date().toISOString() };
         db.shares.push(sh);
       }
+      // Sharing with someone also lets them create an account. Whether the
+      // email already has an account is not revealed.
+      if (!db.users[member]) addInvite(member, user.email);
       persist();
       notify(member, 'shared', { shareId: sh.id });
-      return sendJson(res, 200, { share: shareOut(sh), registered: !!db.users[member] });
+      return sendJson(res, 200, { share: shareOut(sh) });
     }
 
     const shareMatch = pathname.match(/^\/api\/shares\/([\w-]+)$/);
@@ -736,13 +940,15 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
       const sh = shareById(moneyMatch[1]);
       if (!sh || sh.member !== user.email) throw new HttpError(404, 'Not found.');
       if (sh.role !== 'edit') throw new HttpError(403, 'You can only view these envelopes.');
-      const { budget } = ownerBudget(sh.owner);
+      // Read the request first, then the owner's latest budget, so a slow
+      // request can never save an old copy over newer changes.
       const body = await readJson(req);
+      const { budget } = ownerBudget(sh.owner);
       const amount = Number(body?.amount);
-      if (!Number.isInteger(amount) || amount <= 0) throw new HttpError(400, 'Enter an amount to add.');
+      if (!Number.isInteger(amount) || amount <= 0 || amount > MAX_MEMBER_CENTS) throw new HttpError(400, 'Enter an amount to add.');
       if (!sh.envelopeIds.includes(body?.envelopeId) || !budget.envelopes.some((e) => e.id === body.envelopeId)) throw new HttpError(400, 'Pick one of the shared envelopes.');
       if (!budget.accounts.some((a) => a.id === body?.accountId && !a.offBudget)) throw new HttpError(400, 'Pick the account the money went into.');
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(body?.date || ''))) throw new HttpError(400, 'Date must be YYYY-MM-DD.');
+      if (!realDate(body?.date)) throw new HttpError(400, 'Date must be YYYY-MM-DD.');
       budget.transactions.push({
         id: crypto.randomUUID(),
         date: body.date,
@@ -765,21 +971,25 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
       if (!sh || sh.member !== user.email) throw new HttpError(404, 'Not found.');
       if (req.method === 'GET' && !sharedMatch[2]) return sendJson(res, 200, sharedView(sh));
       if (sh.role !== 'edit') throw new HttpError(403, 'You can only view these envelopes.');
-      const { budget } = ownerBudget(sh.owner);
       const clientId = req.headers['x-client-id'];
+      // As above: the request body first, then the owner's latest budget.
+      const body = req.method === 'POST' ? await readJson(req) : null;
+      const { budget } = ownerBudget(sh.owner);
 
       if (req.method === 'POST' && sharedMatch[2] && !sharedMatch[3]) {
-        const body = await readJson(req);
+        const amount = Number(body?.amount);
+        if (!Number.isInteger(amount) || amount <= 0 || amount > MAX_MEMBER_CENTS) throw new HttpError(400, 'Enter an amount.');
+        if (!realDate(body?.date)) throw new HttpError(400, 'Date must be YYYY-MM-DD.');
         if (!sh.envelopeIds.includes(body?.envelopeId)) throw new HttpError(400, 'Pick one of the shared envelopes.');
         if (!budget.accounts.some((a) => a.id === body?.accountId && !a.offBudget)) throw new HttpError(400, 'Pick an account.');
         let tx;
         try {
           tx = Budget.addTransaction(budget, {
             kind: 'spend', date: body.date, payee: String(body.payee || '').slice(0, 80), note: String(body.note || '').slice(0, 140),
-            amount: Number(body.amount), envelopeId: body.envelopeId, accountId: body.accountId,
+            amount, envelopeId: body.envelopeId, accountId: body.accountId,
           });
         } catch (err) {
-          throw new HttpError(400, err.message);
+          throw new HttpError(400, err instanceof Error && err.message.length < 120 ? err.message : 'That transaction could not be added.');
         }
         tx.createdBy = user.email;
         saveOwnerBudget(sh.owner, budget, clientId);
@@ -813,7 +1023,11 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
           tmpDir: path.join(dataDir, 'tmp'),
         });
       } catch (err) {
-        throw new HttpError(400, err.message);
+        // Messages written for people pass through; anything else (a database
+        // or parser error) is logged and replaced, so internals do not leak.
+        const friendly = err && err.constructor === Error && !err.code && err.message.length < 200;
+        if (!friendly) console.error('Actual import failed:', err);
+        throw new HttpError(400, friendly ? err.message : 'This file could not be read as an Actual export.');
       }
       // Not saved here: the app shows a summary and saves after the user confirms.
       return sendJson(res, 200, result);
@@ -866,13 +1080,32 @@ function createApp({ dataDir, publicDir, secureCookies = false, keyFile }) {
     const extra = pathname === '/sw.js' ? { 'Service-Worker-Allowed': '/' } : {};
     res.writeHead(200, { 'Content-Type': type, ...SECURITY_HEADERS, 'Cache-Control': 'no-cache', ...extra });
     if (req.method === 'HEAD') return res.end();
-    fs.createReadStream(file).pipe(res);
+    const stream = fs.createReadStream(file);
+    stream.on('error', () => res.destroy());
+    stream.pipe(res);
   }
 
   const server = http.createServer(async (req, res) => {
     const { pathname } = new URL(req.url, 'http://localhost');
     try {
       if (pathname.startsWith('/api/')) {
+        // Requests that change something must come from this site's own pages.
+        // Browsers always send Origin on such requests; tools like the admin
+        // CLI send none and authenticate otherwise.
+        if (!['GET', 'HEAD'].includes(req.method)) {
+          // Modern browsers say where a request comes from (Sec-Fetch-Site),
+          // unaffected by a proxy that rewrites Host; older ones send Origin.
+          const site = req.headers['sec-fetch-site'];
+          if (site !== undefined) {
+            if (site !== 'same-origin' && site !== 'none') throw new HttpError(403, 'This request did not come from Envelo.');
+          } else if (req.headers.origin !== undefined) {
+            let host = '';
+            try { host = new URL(req.headers.origin).host; } catch { /* not a URL */ }
+            const expected = (trustProxy && req.headers['x-forwarded-host']) || req.headers.host;
+            if (!host || host !== expected) throw new HttpError(403, 'This request did not come from Envelo.');
+          }
+        }
+        if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
         await api(req, res, pathname);
       } else if (req.method === 'GET' || req.method === 'HEAD') {
         serveStatic(req, res, pathname);
@@ -904,6 +1137,9 @@ if (require.main === module) {
     publicDir: root,
     secureCookies: process.env.SECURE_COOKIES === '1',
     keyFile: process.env.KEY_FILE || undefined,
+    trustProxy: process.env.TRUST_PROXY === '1',
+    receiptQuotaMb: Number(process.env.RECEIPT_QUOTA_MB) > 0 ? Number(process.env.RECEIPT_QUOTA_MB) : 200,
+    registration: ['open', 'invite', 'closed'].includes(process.env.REGISTRATION) ? process.env.REGISTRATION : 'invite',
   });
   const port = Number(process.env.PORT || 3000);
   const host = process.env.HOST || '0.0.0.0';

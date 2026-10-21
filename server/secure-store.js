@@ -2,14 +2,21 @@
 
 // Encryption at rest: AES-256-GCM with a key kept outside the data folder
 // (by default /etc/envelo/secret.key), so copies of the data folder and its
-// backups cannot be read without it. Files without the header are plain text
-// from older versions and are read as they are.
+// backups cannot be read without it.
+//
+// Formats:
+//   ENV2 + iv + tag + body: bound to a context (what the file is and whose it
+//     is) as additional authenticated data, so a file cannot be swapped for
+//     another one encrypted with the same key.
+//   ENV1 + iv + tag + body: older files, no context; still read.
+//   anything else: plain text from before encryption, read only when allowed.
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
 const MAGIC = Buffer.from('ENV1');
+const MAGIC2 = Buffer.from('ENV2');
 
 function readKey(file) {
   const key = Buffer.from(fs.readFileSync(file, 'utf8').trim(), 'base64');
@@ -40,22 +47,30 @@ function loadKey(keyFile, fallbackFile = null) {
   return key;
 }
 
-function encrypt(key, plain) {
+function encrypt(key, plain, context = null) {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  if (context) cipher.setAAD(Buffer.from(context));
   const body = Buffer.concat([cipher.update(plain), cipher.final()]);
-  return Buffer.concat([MAGIC, iv, cipher.getAuthTag(), body]);
+  return Buffer.concat([context ? MAGIC2 : MAGIC, iv, cipher.getAuthTag(), body]);
 }
 
 function isEncrypted(buf) {
-  return buf.length >= 32 && buf.subarray(0, 4).equals(MAGIC);
+  return buf.length >= 32 && (buf.subarray(0, 4).equals(MAGIC) || buf.subarray(0, 4).equals(MAGIC2));
 }
 
-function decrypt(key, buf) {
-  if (!isEncrypted(buf)) return buf;
+//   context: must match what the file was encrypted with (ENV2 files)
+//   allowPlain: accept a file that is not encrypted at all (old data)
+function decrypt(key, buf, { context = null, allowPlain = true } = {}) {
+  if (!isEncrypted(buf)) {
+    if (!allowPlain) throw new Error('This file is not encrypted, but encrypted data was expected.');
+    return buf;
+  }
+  const bound = buf.subarray(0, 4).equals(MAGIC2);
   const iv = buf.subarray(4, 16);
   const tag = buf.subarray(16, 32);
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  if (bound) decipher.setAAD(Buffer.from(context || ''));
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(buf.subarray(32)), decipher.final()]);
 }
